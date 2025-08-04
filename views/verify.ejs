@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>小菲验证 - <%= groupName %></title>
+    <link rel="stylesheet" href="/css/modern-verify.css">
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+</head>
+<body>
+    <!-- 动态背景层 -->
+    <div class="dynamic-bg">
+        <div class="gradient-orb orb-1"></div>
+        <div class="gradient-orb orb-2"></div>
+        <div class="gradient-orb orb-3"></div>
+    </div>
+
+    <!-- 粒子画布 -->
+    <canvas id="particles"></canvas>
+
+    <!-- 主容器 -->
+    <div class="container">
+        <!-- Liquid Glass 卡片 -->
+        <div class="glass-card main-card">
+            <!-- 头部区域 -->
+            <div class="header-section">
+                <div class="logo-container">
+                    <div class="logo-wrapper">
+                        🍓
+                    </div>
+                </div>
+                <h1 class="title">小菲验证</h1>
+                <p class="subtitle">欢迎加入 <%= groupName %></p>
+            </div>
+
+            <!-- 内容区域 -->
+            <div class="content-section">
+                <!-- 用户信息卡片 -->
+                <div class="bento-item user-info">
+                    <div class="avatar">
+                        <%= userFirstName.charAt(0).toUpperCase() %>
+                    </div>
+                    <div class="user-details">
+                        <h3><%= userFirstName %> <%= userLastName || '' %></h3>
+                        <% if (username) { %>
+                            <p class="username">@<%= username %></p>
+                        <% } %>
+                    </div>
+                </div>
+
+                <!-- 倒计时卡片 -->
+                <div class="bento-item countdown-section">
+                    <div class="countdown-wrapper">
+                        <svg class="countdown-ring" viewBox="0 0 120 120">
+                            <defs>
+                                <linearGradient id="timer-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                                    <stop offset="0%" style="stop-color:#FF10F0;stop-opacity:1" />
+                                    <stop offset="50%" style="stop-color:#8B5CF6;stop-opacity:1" />
+                                    <stop offset="100%" style="stop-color:#06B6D4;stop-opacity:1" />
+                                </linearGradient>
+                            </defs>
+                            <circle class="timer-bg" cx="60" cy="60" r="54"/>
+                            <circle class="timer-progress" cx="60" cy="60" r="54"/>
+                        </svg>
+                        <div class="countdown-text">
+                            <div class="countdown-number" id="countdown"><%= ttlMinutes %></div>
+                            <div class="countdown-label">分钟</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Turnstile 验证区域 - 居中突出 -->
+            <div class="form-section">
+                <form id="verifyForm" method="POST" action="/api/verify">
+                    <input type="hidden" name="token" value="<%= token %>">
+                    
+                    <!-- Turnstile 人机验证 -->
+                    <div class="turnstile-container">
+                        <div class="cf-turnstile" 
+                             data-sitekey="<%= siteKey %>"
+                             data-callback="onTurnstileSuccess"
+                             data-error-callback="onTurnstileError"
+                             data-theme="dark">
+                        </div>
+                    </div>
+
+                    <!-- 提交按钮 -->
+                    <button type="submit" id="submitBtn" class="magnetic-button" disabled>
+                        <span>完成验证</span>
+                    </button>
+                </form>
+
+                <!-- 消息提示 -->
+                <div id="errorMessage" class="message error-message" style="display: none;"></div>
+                <div id="successMessage" class="message success-message" style="display: none;"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 现代化交互脚本 -->
+    <script src="/js/modern-verify.js"></script>
+</body>
+</html>

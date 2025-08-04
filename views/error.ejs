@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>验证失败</title>
+    <link rel="stylesheet" href="/css/modern-verify.css">
+</head>
+<body>
+    <div class="container">
+        <div class="card error-card">
+            <div class="error-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="12" y1="8" x2="12" y2="12"/>
+                    <line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+            </div>
+            
+            <h1>验证失败</h1>
+            <p class="error-message"><%= message %></p>
+            
+            <% if (canRetry) { %>
+                <div class="action-buttons">
+                    <a href="javascript:history.back()" class="btn btn-secondary">
+                        重试
+                    </a>
+                    <a href="tg://resolve?domain=<%= botUsername %>" class="btn btn-primary">
+                        返回 Telegram
+                    </a>
+                </div>
+            <% } else { %>
+                <div class="action-buttons">
+                    <a href="tg://resolve?domain=<%= botUsername %>" class="btn btn-primary">
+                        返回 Telegram
+                    </a>
+                </div>
+            <% } %>
+        </div>
+    </div>
+</body>
+</html>

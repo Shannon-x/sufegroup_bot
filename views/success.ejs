@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>验证成功 - 小菲验证</title>
+    <link rel="stylesheet" href="/css/modern-verify.css">
+    <style>
+        .success-animation {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            text-align: center;
+        }
+        
+        .success-icon-wrapper {
+            position: relative;
+            width: 120px;
+            height: 120px;
+            margin-bottom: 32px;
+        }
+        
+        .success-circle {
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(135deg, #00ff88, #00cc66);
+            border-radius: 50%;
+            opacity: 0;
+            animation: scaleIn 0.6s ease forwards;
+        }
+        
+        .success-checkmark {
+            position: absolute;
+            inset: 20px;
+            stroke: white;
+            stroke-width: 4;
+            fill: none;
+            stroke-dasharray: 100;
+            stroke-dashoffset: 100;
+            animation: drawCheck 0.8s ease forwards 0.4s;
+        }
+        
+        .success-ripple {
+            position: absolute;
+            inset: -20px;
+            border: 3px solid #00ff88;
+            border-radius: 50%;
+            opacity: 0;
+            animation: ripple 1.5s ease 0.8s;
+        }
+        
+        .success-content {
+            opacity: 0;
+            animation: fadeInUp 0.6s ease forwards 0.6s;
+        }
+        
+        .success-title {
+            font-size: 32px;
+            font-weight: 700;
+            color: var(--success-color);
+            margin-bottom: 16px;
+        }
+        
+        .success-message {
+            font-size: 18px;
+            color: var(--text-secondary);
+            margin-bottom: 32px;
+        }
+        
+        @keyframes scaleIn {
+            to {
+                opacity: 1;
+                transform: scale(1);
+            }
+        }
+        
+        @keyframes drawCheck {
+            to {
+                stroke-dashoffset: 0;
+            }
+        }
+        
+        @keyframes ripple {
+            to {
+                transform: scale(2);
+                opacity: 0;
+            }
+        }
+        
+        @keyframes fadeInUp {
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .confetti {
+            position: fixed;
+            width: 10px;
+            height: 10px;
+            background: var(--primary-pink);
+            position: absolute;
+            animation: confetti-fall 3s linear forwards;
+        }
+        
+        @keyframes confetti-fall {
+            to {
+                transform: translateY(100vh) rotate(360deg);
+                opacity: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- 动态背景层 -->
+    <div class="dynamic-bg">
+        <div class="gradient-orb orb-1"></div>
+        <div class="gradient-orb orb-2"></div>
+        <div class="gradient-orb orb-3"></div>
+    </div>
+
+    <div class="container">
+        <div class="success-animation">
+            <div class="success-icon-wrapper">
+                <div class="success-circle"></div>
+                <svg class="success-checkmark" viewBox="0 0 52 52">
+                    <path d="M14 27l7.5 7.5L38 18"/>
+                </svg>
+                <div class="success-ripple"></div>
+            </div>
+            
+            <div class="success-content">
+                <h1 class="success-title">验证成功！</h1>
+                <p class="success-message">您已成功完成验证，现在可以在群组中正常发言了</p>
+                
+                <a href="tg://resolve?domain=<%= botUsername %>" class="magnetic-button" style="max-width: 300px; margin: 0 auto;">
+                    <span class="button-bg"></span>
+                    <span class="button-content">
+                        <span class="btn-text">返回 Telegram</span>
+                    </span>
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <canvas id="particles"></canvas>
+
+    <script>
+        // 创建彩纸效果
+        function createConfetti() {
+            const colors = ['#FF69B4', '#FF1493', '#00ff88', '#FFD700', '#00CED1'];
+            
+            for (let i = 0; i < 50; i++) {
+                setTimeout(() => {
+                    const confetti = document.createElement('div');
+                    confetti.className = 'confetti';
+                    confetti.style.left = Math.random() * 100 + '%';
+                    confetti.style.background = colors[Math.floor(Math.random() * colors.length)];
+                    confetti.style.animationDelay = Math.random() * 0.5 + 's';
+                    confetti.style.animationDuration = (Math.random() * 3 + 2) + 's';
+                    document.body.appendChild(confetti);
+                    
+                    setTimeout(() => confetti.remove(), 5000);
+                }, i * 30);
+            }
+        }
+        
+        // 页面加载时触发彩纸效果
+        window.addEventListener('load', createConfetti);
+        
+        // 自动跳转
+        setTimeout(() => {
+            window.location.href = 'tg://resolve?domain=<%= botUsername %>';
+        }, 5000);
+    </script>
+</body>
+</html>
