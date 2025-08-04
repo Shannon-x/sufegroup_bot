@@ -341,9 +341,8 @@ docker stats
 
 ## 📞 支持
 
-- Issues: [GitHub Issues](https://github.com/yourusername/telegram-group-bot/issues)
-- Telegram: [@your_support_group](https://t.me/your_support_group)
+- Telegram: [@苏菲家宽](https://t.me/isufe2)
 
 ---
 
-Made with ❤️ by [Your Name]
+Made with ❤️ by [林青枫]
