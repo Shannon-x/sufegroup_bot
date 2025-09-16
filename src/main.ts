@@ -15,6 +15,9 @@ import { TelegramBot } from './services/TelegramBot';
 import { VerificationController } from './controllers/VerificationController';
 import { SchedulerService } from './services/SchedulerService';
 import { RateLimitMiddleware } from './middleware/RateLimitMiddleware';
+import { TelegramIpWhitelist } from './middleware/TelegramIpWhitelist';
+import { WebhookSignatureVerifier } from './middleware/WebhookSignatureVerifier';
+import { LogSanitizer } from './utils/LogSanitizer';
 
 async function bootstrap() {
   const logger = new Logger('Main');
@@ -29,6 +32,7 @@ async function bootstrap() {
     const fastify = Fastify({
       logger: false,
       trustProxy: true,
+      bodyLimit: 10240, // 10KB limit for webhook payloads
     });
 
     // Register plugins
@@ -96,10 +100,15 @@ async function bootstrap() {
       
       fastify.post('/telegram-webhook', {
         preHandler: async (request, reply) => {
-          // Verify webhook secret
-          const secret = request.headers['x-telegram-bot-api-secret-token'];
-          if (secret !== config.bot.webhookSecret) {
-            reply.code(401).send({ error: 'Unauthorized' });
+          // Verify IP whitelist
+          const ipValid = await TelegramIpWhitelist.verify(request, reply);
+          if (!ipValid) {
+            return;
+          }
+
+          // Verify webhook signature and secret
+          const signatureValid = await WebhookSignatureVerifier.verify(request, reply);
+          if (!signatureValid) {
             return;
           }
 
@@ -113,20 +122,15 @@ async function bootstrap() {
       }, async (request, reply) => {
         try {
           const update = request.body as any;
-          logger.info('Webhook received', {
-            updateId: update.update_id,
-            hasMessage: !!update.message,
-            hasChatMember: !!update.chat_member,
-            hasCallbackQuery: !!update.callback_query,
-            messageText: update.message?.text,
-            newChatMembers: update.message?.new_chat_members?.length || 0
-          });
+          // Sanitize update data before logging
+          const sanitizedUpdate = LogSanitizer.sanitizeWebhookUpdate(update);
+          logger.info('Webhook received', sanitizedUpdate);
           
           await bot.getBot().handleUpdate(update);
           reply.send({ ok: true });
         } catch (error) {
           logger.error('Webhook error', error);
-          reply.code(500).send({ error: 'Internal server error' });
+          reply.code(404).send({ error: 'Not found' }); // Return 404 to hide webhook existence
         }
       });
     }

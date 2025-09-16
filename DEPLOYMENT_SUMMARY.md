@@ -4,7 +4,7 @@
 
 ### Bot Information
 - **Bot Name**: 小菲 @sufeadmin_bot
-- **Bot Token**: 7718935459:AAG-KKzIlWrcjQwdAmon9xrRDi7_2Wd_y1Y
+- **Bot Token**: [REDACTED - Store in .env file only]
 - **Container Name**: telegram-group-bot
 - **Status**: Running on port 8080
 - **Webhook URL**: https://sufebot.848999.xyz/telegram-webhook
