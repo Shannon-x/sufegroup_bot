@@ -61,7 +61,7 @@ export class InitialSchema1706000000000 implements MigrationInterface {
 
         // Create join_sessions table
         await queryRunner.query(`
-            CREATE TYPE "public"."join_sessions_status_enum" AS ENUM('pending', 'verified', 'expired', 'failed')
+            CREATE TYPE "public"."join_sessions_status_enum" AS ENUM('pending', 'verified', 'expired', 'failed', 'cancelled')
         `);
         await queryRunner.query(`
             CREATE TABLE "join_sessions" (

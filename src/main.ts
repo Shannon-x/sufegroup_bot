@@ -28,6 +28,17 @@ async function bootstrap() {
     await AppDataSource.initialize();
     logger.info('Database connected');
 
+    // Run migrations automatically on startup
+    logger.info('Running database migrations...');
+    try {
+      await AppDataSource.runMigrations();
+      logger.info('Database migrations completed successfully');
+    } catch (migrationError) {
+      logger.error('Migration error', migrationError);
+      // Continue startup even if migrations fail (they might already be applied)
+      logger.warn('Continuing with startup despite migration error');
+    }
+
     // Initialize Fastify
     const fastify = Fastify({
       logger: false,
