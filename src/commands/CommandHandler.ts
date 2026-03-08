@@ -16,6 +16,13 @@ import { BanCommand } from './BanCommand';
 import { UnbanCommand } from './UnbanCommand';
 import { MuteCommand } from './MuteCommand';
 import { UnmuteCommand } from './UnmuteCommand';
+import { FilterCommand } from './FilterCommand';
+import { CheckinCommand } from './CheckinCommand';
+import { ProfileCommand } from './ProfileCommand';
+import { RankCommand } from './RankCommand';
+import { LotteryCommand } from './LotteryCommand';
+import { AdminPanelCommand } from './AdminPanelCommand';
+import { TitleCommand } from './TitleCommand';
 
 export class CommandHandler {
   private commands: Map<string, any>;
@@ -45,6 +52,13 @@ export class CommandHandler {
       UnbanCommand,
       MuteCommand,
       UnmuteCommand,
+      FilterCommand,
+      CheckinCommand,
+      ProfileCommand,
+      RankCommand,
+      LotteryCommand,
+      AdminPanelCommand,
+      TitleCommand,
     ];
 
     for (const CommandClass of commandClasses) {

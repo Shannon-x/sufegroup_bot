@@ -7,6 +7,8 @@ import { JoinSession } from '../entities/JoinSession';
 import { AuditLog } from '../entities/AuditLog';
 import { Whitelist } from '../entities/Whitelist';
 import { Blacklist } from '../entities/Blacklist';
+import { UserGroupProfile } from '../entities/UserGroupProfile';
+import { Lottery } from '../entities/Lottery';
 
 export const AppDataSource = new DataSource({
   type: 'postgres',
@@ -17,7 +19,7 @@ export const AppDataSource = new DataSource({
   database: config.db.database,
   synchronize: false,
   logging: config.env === 'development',
-  entities: [User, Group, GroupSettings, JoinSession, AuditLog, Whitelist, Blacklist],
+  entities: [User, Group, GroupSettings, JoinSession, AuditLog, Whitelist, Blacklist, UserGroupProfile, Lottery],
   migrations: ['dist/migrations/*.js'],
   subscribers: [],
 });

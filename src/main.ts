@@ -13,11 +13,13 @@ import { config } from './config/config';
 import { Logger } from './utils/logger';
 import { TelegramBot } from './services/TelegramBot';
 import { VerificationController } from './controllers/VerificationController';
+import { MiniAppController } from './controllers/MiniAppController';
 import { SchedulerService } from './services/SchedulerService';
 import { RateLimitMiddleware } from './middleware/RateLimitMiddleware';
 import { TelegramIpWhitelist } from './middleware/TelegramIpWhitelist';
 import { WebhookSignatureVerifier } from './middleware/WebhookSignatureVerifier';
 import { LogSanitizer } from './utils/LogSanitizer';
+import { redisService } from './services/RedisService';
 
 async function bootstrap() {
   const logger = new Logger('Main');
@@ -51,7 +53,7 @@ async function bootstrap() {
       contentSecurityPolicy: {
         directives: {
           defaultSrc: ["'self'"],
-          scriptSrc: ["'self'", "'unsafe-inline'", 'https://challenges.cloudflare.com'],
+          scriptSrc: ["'self'", "'unsafe-inline'", 'https://challenges.cloudflare.com', 'https://telegram.org'],
           styleSrc: ["'self'", "'unsafe-inline'"],
           frameSrc: ['https://challenges.cloudflare.com'],
           connectSrc: ["'self'", 'https://challenges.cloudflare.com'],
@@ -105,6 +107,9 @@ async function bootstrap() {
     const verificationController = new VerificationController(bot);
     await verificationController.register(fastify);
 
+    const miniAppController = new MiniAppController(bot);
+    await miniAppController.register(fastify);
+
     // Setup webhook endpoint if configured
     if (config.bot.webhookDomain) {
       const rateLimiter = new RateLimitMiddleware();
@@ -133,15 +138,15 @@ async function bootstrap() {
       }, async (request, reply) => {
         try {
           const update = request.body as any;
-          // Sanitize update data before logging
+          // Only log webhook summary at debug level to reduce noise
           const sanitizedUpdate = LogSanitizer.sanitizeWebhookUpdate(update);
-          logger.info('Webhook received', sanitizedUpdate);
-          
+          logger.debug('Webhook received', sanitizedUpdate);
+
           await bot.getBot().handleUpdate(update);
           reply.send({ ok: true });
         } catch (error) {
           logger.error('Webhook error', error);
-          reply.code(404).send({ error: 'Not found' }); // Return 404 to hide webhook existence
+          reply.code(404).send({ error: 'Not found' });
         }
       });
     }
@@ -179,6 +184,7 @@ async function bootstrap() {
         await bot.stop();
         scheduler.stop();
         await fastify.close();
+        await redisService.close();
         await AppDataSource.destroy();
         logger.info('Shutdown complete');
         process.exit(0);

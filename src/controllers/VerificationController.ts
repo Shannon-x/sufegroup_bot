@@ -1,4 +1,4 @@
-import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { FastifyInstance } from 'fastify';
 import { CryptoUtils } from '../utils/crypto';
 import { VerificationService } from '../services/VerificationService';
 import { UserService } from '../services/UserService';
@@ -8,6 +8,7 @@ import { TurnstileService } from '../services/TurnstileService';
 import { TelegramBot } from '../services/TelegramBot';
 import { Logger } from '../utils/logger';
 import { config } from '../config/config';
+import { sendTemporaryMessage, kickUser, unrestrictUser, formatUserMention } from '../utils/telegram';
 
 interface VerifyQuerystring {
   token: string;
@@ -43,70 +44,55 @@ export class VerificationController {
       '/verify',
       async (request, reply) => {
         const { token } = request.query;
+        const botUsername = config.bot.username || 'bot';
 
-        // Verify token
         const tokenData = CryptoUtils.verifyVerificationToken(token);
         if (!tokenData) {
           return reply.view('error', {
             message: '无效或过期的验证链接',
             canRetry: false,
-            botUsername: config.bot.username || 'bot'
+            botUsername
           });
         }
 
-        // Get session
         const session = await this.verificationService.getSession(tokenData.sessionId);
         if (!session || session.status !== 'pending') {
           return reply.view('error', {
             message: '验证会话不存在或已完成',
             canRetry: false,
-            botUsername: config.bot.username || 'bot'
+            botUsername
           });
         }
 
         // Check if expired
         if (new Date() > session.expiresAt) {
           await this.verificationService.incrementAttempts(session.id);
-          
-          // Send expiration notification to group
+
           try {
             const user = await this.userService.findById(tokenData.userId);
-            const userMention = user?.username ? `@${user.username}` : `[${user?.firstName || '用户'}](tg://user?id=${tokenData.userId})`;
-            
-            const expireMsg = await this.bot.getBot().api.sendMessage(
+            const userMention = formatUserMention(user, tokenData.userId);
+
+            await sendTemporaryMessage(
+              this.bot.getBot(),
               Number(tokenData.groupId),
               `⏰ ${userMention} 尝试使用已过期的验证链接。请返回群组重新获取验证链接。`,
-              {
-                parse_mode: 'Markdown'
-              }
+              { parse_mode: 'Markdown' }
             );
-            
-            // Schedule deletion after 30 seconds
-            setTimeout(async () => {
-              try {
-                await this.bot.getBot().api.deleteMessage(
-                  Number(tokenData.groupId),
-                  expireMsg.message_id
-                );
-              } catch (error) {
-                this.logger.error('Failed to delete expiration notification', error);
-              }
-            }, 30000);
           } catch (error) {
             this.logger.error('Failed to send expiration notification', error);
           }
-          
+
           return reply.view('error', {
             message: '验证已过期，请返回群组重新获取验证链接',
             canRetry: false,
-            botUsername: config.bot.username || 'bot'
+            botUsername
           });
         }
 
         // Get user and group info
         const user = await this.userService.findById(tokenData.userId);
-        const group = await this.groupService.findOrCreate({ 
-          id: parseInt(tokenData.groupId), 
+        const group = await this.groupService.findOrCreate({
+          id: parseInt(tokenData.groupId),
           type: 'group',
           title: 'Group'
         });
@@ -115,11 +101,10 @@ export class VerificationController {
           return reply.view('error', {
             message: '用户信息不存在',
             canRetry: false,
-            botUsername: config.bot.username || 'bot'
+            botUsername
           });
         }
 
-        // Calculate remaining time
         const remainingMs = session.expiresAt.getTime() - Date.now();
         const remainingMinutes = Math.ceil(remainingMs / 60000);
 
@@ -131,7 +116,7 @@ export class VerificationController {
           userLastName: user.lastName,
           username: user.username,
           ttlMinutes: remainingMinutes,
-          botUsername: config.bot.username || 'bot'
+          botUsername
         });
       }
     );
@@ -140,16 +125,15 @@ export class VerificationController {
     fastify.post<{ Body: VerifyBody }>(
       '/api/verify',
       async (request, reply) => {
-        this.logger.info('Verification request received', {
-          contentType: request.headers['content-type'],
-          body: request.body,
-          ip: request.ip
-        });
-        
         const { token, turnstileToken } = request.body;
         const remoteIp = request.ip;
 
-        // Verify token
+        this.logger.info('Verification request received', {
+          ip: remoteIp,
+          hasToken: !!token,
+          hasTurnstileToken: !!turnstileToken
+        });
+
         const tokenData = CryptoUtils.verifyVerificationToken(token);
         if (!tokenData) {
           return reply.code(400).send({
@@ -158,7 +142,6 @@ export class VerificationController {
           });
         }
 
-        // Get session
         const session = await this.verificationService.getSession(tokenData.sessionId);
         if (!session || session.status !== 'pending') {
           return reply.code(400).send({
@@ -177,47 +160,20 @@ export class VerificationController {
             ip: remoteIp
           });
 
-          // Send failure notification to group
           try {
             const user = await this.userService.findById(session.userId);
-            const userMention = user?.username ? `@${user.username}` : `[${user?.firstName || '用户'}](tg://user?id=${session.userId})`;
-            
-            const failMsg = await this.bot.getBot().api.sendMessage(
+            const userMention = formatUserMention(user, session.userId);
+
+            await sendTemporaryMessage(
+              this.bot.getBot(),
               Number(session.groupId),
               `❌ ${userMention} 验证失败（尝试次数过多），已被移除。`,
-              {
-                parse_mode: 'Markdown'
-              }
+              { parse_mode: 'Markdown' }
             );
-            
-            // Schedule deletion after 30 seconds
-            setTimeout(async () => {
-              try {
-                await this.bot.getBot().api.deleteMessage(
-                  Number(session.groupId),
-                  failMsg.message_id
-                );
-              } catch (error) {
-                this.logger.error('Failed to delete failure notification', error);
-              }
-            }, 30000);
-            
-            // Kick the user from the group
-            try {
-              await this.bot.getBot().api.banChatMember(
-                Number(session.groupId),
-                Number(session.userId)
-              );
-              // Immediately unban so they can rejoin later
-              await this.bot.getBot().api.unbanChatMember(
-                Number(session.groupId),
-                Number(session.userId)
-              );
-            } catch (error) {
-              this.logger.error('Failed to kick user', error);
-            }
+
+            await kickUser(this.bot.getBot(), Number(session.groupId), Number(session.userId));
           } catch (error) {
-            this.logger.error('Failed to send failure notification', error);
+            this.logger.error('Failed to handle too-many-attempts', error);
           }
 
           return reply.code(429).send({
@@ -259,84 +215,18 @@ export class VerificationController {
         }
 
         // Remove restrictions from user
-        try {
-          // To completely unrestrict a user, we need to promote and then demote them
-          // This is the only way to change status from 'restricted' to 'member'
-          const chatId = Number(session.groupId);
-          const userId = Number(session.userId);
-          
-          // First promote with no permissions
-          await this.bot.getBot().api.promoteChatMember(chatId, userId, {
-            can_manage_chat: false,
-            can_post_messages: false,
-            can_edit_messages: false,
-            can_delete_messages: false,
-            can_manage_video_chats: false,
-            can_restrict_members: false,
-            can_promote_members: false,
-            can_change_info: false,
-            can_invite_users: false,
-            can_pin_messages: false,
-          });
-          
-          // Then immediately demote back to regular member
-          await this.bot.getBot().api.promoteChatMember(chatId, userId, {
-            can_manage_chat: false,
-            can_post_messages: false,
-            can_edit_messages: false,
-            can_delete_messages: false,
-            can_manage_video_chats: false,
-            can_restrict_members: false,
-            can_promote_members: false,
-            can_change_info: false,
-            can_invite_users: false,
-            can_pin_messages: false,
-          });
+        const chatId = Number(session.groupId);
+        const userId = Number(session.userId);
 
-          this.logger.info('User verified and changed to member status', {
+        try {
+          await unrestrictUser(this.bot.getBot(), chatId, userId);
+          this.logger.info('User verified and unrestricted', {
             userId: session.userId,
             groupId: session.groupId
           });
         } catch (error) {
-          this.logger.error('Error removing restrictions', error);
-          
-          // Fallback to the old method if promote/demote fails
-          try {
-            await this.bot.getBot().api.restrictChatMember(
-              Number(session.groupId),
-              Number(session.userId),
-              {
-                can_send_messages: true,
-                can_send_audios: true,
-                can_send_documents: true,
-                can_send_photos: true,
-                can_send_videos: true,
-                can_send_video_notes: true,
-                can_send_voice_notes: true,
-                can_send_polls: true,
-                can_send_other_messages: true,
-                can_add_web_page_previews: true,
-                can_change_info: false,
-                can_invite_users: true,
-                can_pin_messages: false,
-              }
-            );
-            this.logger.info('User verified using fallback method', {
-              userId: session.userId,
-              groupId: session.groupId
-            });
-          } catch (fallbackError) {
-            this.logger.error('Fallback method also failed', fallbackError);
-          }
+          this.logger.error('Failed to unrestrict user', error);
         }
-
-        // DISABLED: Add user to whitelist - User requested no whitelist
-        // await this.verificationService.addToWhitelist(
-        //   session.userId,
-        //   session.groupId,
-        //   'system',
-        //   'Auto-added after successful verification'
-        // );
 
         // Log verification
         await this.auditService.log({
@@ -351,71 +241,38 @@ export class VerificationController {
         try {
           const group = await this.groupService.findById(session.groupId);
           const groupName = group?.title || '群组';
-          
+
           await this.bot.getBot().api.sendMessage(
-            Number(session.userId),
+            userId,
             `✅ 验证成功！\n\n您已成功完成 **${groupName}** 的验证，现在可以正常发言了。\n\n感谢您的配合！`,
-            {
-              parse_mode: 'Markdown'
-            }
+            { parse_mode: 'Markdown' }
           );
-          
-          this.logger.info('Sent verification success notification', {
-            userId: session.userId,
-            groupId: session.groupId
-          });
         } catch (error) {
-          this.logger.error('Failed to send success notification', error);
+          this.logger.debug('Could not send private success notification (user may not have started the bot)');
         }
 
-        // Send verification success notification to group
+        // Send success notification to group (auto-deletes after 30s)
         try {
           const user = await this.userService.findById(session.userId);
-          const userMention = user?.username ? `@${user.username}` : `[${user?.firstName || '用户'}](tg://user?id=${session.userId})`;
-          
-          const successMsg = await this.bot.getBot().api.sendMessage(
-            Number(session.groupId),
+          const userMention = formatUserMention(user, session.userId);
+
+          await sendTemporaryMessage(
+            this.bot.getBot(),
+            chatId,
             `✅ ${userMention} 已成功通过验证，欢迎加入群组！`,
-            {
-              parse_mode: 'Markdown'
-            }
+            { parse_mode: 'Markdown' }
           );
-          
-          // Schedule deletion of success message after 30 seconds
-          setTimeout(async () => {
-            try {
-              await this.bot.getBot().api.deleteMessage(
-                Number(session.groupId),
-                successMsg.message_id
-              );
-            } catch (error) {
-              this.logger.error('Failed to delete success notification', error);
-            }
-          }, 30000);
-          
-          this.logger.info('Sent verification success notification to group', {
-            userId: session.userId,
-            groupId: session.groupId
-          });
         } catch (error) {
           this.logger.error('Failed to send group notification', error);
         }
 
         // Delete welcome message from group
-        try {
-          if (session.messageId) {
-            await this.bot.getBot().api.deleteMessage(
-              Number(session.groupId),
-              session.messageId
-            );
-            
-            this.logger.info('Deleted welcome message from group', {
-              messageId: session.messageId,
-              groupId: session.groupId
-            });
+        if (session.messageId) {
+          try {
+            await this.bot.getBot().api.deleteMessage(chatId, session.messageId);
+          } catch (error) {
+            this.logger.debug('Could not delete welcome message');
           }
-        } catch (error) {
-          this.logger.error('Failed to delete welcome message', error);
         }
 
         return reply.send({
@@ -427,7 +284,7 @@ export class VerificationController {
     );
 
     // Success page
-    fastify.get('/verify/success', async (request, reply) => {
+    fastify.get('/verify/success', async (_request, reply) => {
       return reply.view('success', {
         botUsername: config.bot.username || 'bot'
       });

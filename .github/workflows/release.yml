@@ -1,0 +1,123 @@
+# Release: 推送 tag 时自动构建 Docker 镜像 + 创建 GitHub Release
+#
+# 工作流:
+#   1. 推送 tag (v1.2.3) 触发
+#   2. 类型检查
+#   3. 构建并推送 Docker 镜像到 GitHub Container Registry (ghcr.io)
+#   4. 创建 GitHub Release (附带变更日志)
+#
+# 用法:
+#   git tag v1.2.0
+#   git push origin v1.2.0
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  # ── 阶段1: 检查代码质量 ──
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      - run: npx tsc --noEmit
+
+  # ── 阶段2: 构建并推送 Docker 镜像 ──
+  docker:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 提取版本号
+        id: meta
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION"
+
+      - name: 登录 GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 设置 Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 构建并推送 Docker 镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+
+  # ── 阶段3: 创建 GitHub Release ──
+  release:
+    needs: docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 需要完整历史来生成变更日志
+
+      - name: 生成变更日志
+        id: changelog
+        run: |
+          # 获取上一个 tag
+          PREV_TAG=$(git tag --sort=-creatordate | head -2 | tail -1)
+          if [ -z "$PREV_TAG" ] || [ "$PREV_TAG" = "$GITHUB_REF_NAME" ]; then
+            PREV_TAG=$(git rev-list --max-parents=0 HEAD)
+          fi
+
+          echo "Changes since: $PREV_TAG"
+
+          # 生成变更日志
+          {
+            echo "## 变更内容"
+            echo ""
+            git log "${PREV_TAG}..HEAD" --pretty=format:"- %s (%h)" --no-merges | head -50
+            echo ""
+            echo ""
+            echo "## Docker 镜像"
+            echo ""
+            echo '```bash'
+            echo "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${GITHUB_REF_NAME#v}"
+            echo '```'
+          } > /tmp/changelog.md
+
+          cat /tmp/changelog.md
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: /tmp/changelog.md
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

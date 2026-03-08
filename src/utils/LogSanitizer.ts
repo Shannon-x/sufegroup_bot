@@ -1,18 +1,20 @@
 export class LogSanitizer {
-  private static readonly SENSITIVE_FIELDS = [
+  private static readonly SENSITIVE_FIELDS = new Set([
     'text',
     'caption',
-    'messageText',
+    'messagetext',
     'message_text',
     'first_name',
     'last_name',
+    'firstname',
+    'lastname',
     'username',
     'phone_number',
     'email',
     'contact',
     'location',
     'venue'
-  ];
+  ]);
 
   static sanitize(data: any): any {
     if (!data || typeof data !== 'object') {
@@ -26,7 +28,7 @@ export class LogSanitizer {
     const sanitized: any = {};
 
     for (const [key, value] of Object.entries(data)) {
-      if (this.SENSITIVE_FIELDS.includes(key.toLowerCase())) {
+      if (this.SENSITIVE_FIELDS.has(key.toLowerCase())) {
         sanitized[key] = '[REDACTED]';
       } else if (typeof value === 'object') {
         sanitized[key] = this.sanitize(value);

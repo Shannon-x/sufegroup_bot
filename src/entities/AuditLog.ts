@@ -2,7 +2,7 @@ import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, ManyToOne, Jo
 import { User } from './User';
 import { Group } from './Group';
 
-export type AuditAction = 
+export type AuditAction =
   | 'user_joined'
   | 'user_left'
   | 'user_verified'
@@ -19,7 +19,8 @@ export type AuditAction =
   | 'settings_changed'
   | 'command_executed'
   | 'reverify_triggered'
-  | 'bot_added';
+  | 'bot_added'
+  | 'message_filtered';
 
 @Entity('audit_logs')
 @Index(['groupId', 'createdAt'])

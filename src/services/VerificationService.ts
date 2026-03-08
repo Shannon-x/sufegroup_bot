@@ -3,10 +3,13 @@ import { AppDataSource } from '../config/database';
 import { JoinSession, SessionStatus } from '../entities/JoinSession';
 import { Whitelist } from '../entities/Whitelist';
 import { Blacklist } from '../entities/Blacklist';
-import { GroupSettings } from '../entities/GroupSettings';
 import { Logger } from '../utils/logger';
 import { CryptoUtils } from '../utils/crypto';
 import { config } from '../config/config';
+import { sendTemporaryMessage, kickUser, formatUserMention } from '../utils/telegram';
+import { Bot } from 'grammy';
+
+const CLEANUP_BATCH_SIZE = 100;
 
 export class VerificationService {
   private sessionRepository: Repository<JoinSession>;
@@ -64,7 +67,7 @@ export class VerificationService {
 
   async verifySession(sessionId: string, userIp?: string, userAgent?: string): Promise<boolean> {
     const session = await this.getSession(sessionId);
-    
+
     if (!session || session.status !== 'pending') {
       return false;
     }
@@ -87,27 +90,41 @@ export class VerificationService {
   }
 
   async incrementAttempts(sessionId: string): Promise<number> {
-    const session = await this.getSession(sessionId);
-    if (!session) return 0;
+    await this.sessionRepository
+      .createQueryBuilder()
+      .update(JoinSession)
+      .set({ attemptCount: () => '"attemptCount" + 1' })
+      .where('id = :id', { id: sessionId })
+      .execute();
 
-    session.attemptCount += 1;
-    await this.sessionRepository.save(session);
-    
-    return session.attemptCount;
+    const session = await this.sessionRepository.findOne({ where: { id: sessionId } });
+    return session?.attemptCount ?? 0;
+  }
+
+  async updateSessionStatus(sessionId: string, status: SessionStatus): Promise<void> {
+    await this.sessionRepository.update({ id: sessionId }, { status });
+  }
+
+  async updateSessionMessageId(sessionId: string, messageId: number): Promise<void> {
+    await this.sessionRepository.update({ id: sessionId }, { messageId });
+  }
+
+  async cancelSession(sessionId: string): Promise<void> {
+    await this.updateSessionStatus(sessionId, 'cancelled');
   }
 
   async isWhitelisted(userId: string, groupId: string): Promise<boolean> {
-    const entry = await this.whitelistRepository.findOne({
+    const count = await this.whitelistRepository.count({
       where: { userId, groupId }
     });
-    return !!entry;
+    return count > 0;
   }
 
   async isBlacklisted(userId: string, groupId: string): Promise<boolean> {
-    const entry = await this.blacklistRepository.findOne({
+    const count = await this.blacklistRepository.count({
       where: { userId, groupId }
     });
-    return !!entry;
+    return count > 0;
   }
 
   async addToWhitelist(userId: string, groupId: string, addedBy: string, reason?: string): Promise<void> {
@@ -162,91 +179,77 @@ export class VerificationService {
     return false;
   }
 
-  async cleanupExpiredSessions(bot?: any): Promise<number> {
-    // Get all pending sessions that have expired
-    const expiredSessions = await this.sessionRepository
-      .createQueryBuilder('session')
-      .leftJoinAndSelect('session.user', 'user')
-      .leftJoinAndSelect('session.group', 'group')
-      .where('session.status = :status', { status: 'pending' })
-      .andWhere('session.expiresAt < :now', { now: new Date() })
-      .getMany();
+  async cleanupExpiredSessions(bot?: Bot<any>): Promise<number> {
+    let totalProcessed = 0;
 
-    if (expiredSessions.length === 0) {
-      return 0;
+    // Process in batches to avoid loading too many sessions at once
+    while (true) {
+      const expiredSessions = await this.sessionRepository
+        .createQueryBuilder('session')
+        .leftJoinAndSelect('session.user', 'user')
+        .leftJoinAndSelect('session.group', 'group')
+        .where('session.status = :status', { status: 'pending' })
+        .andWhere('session.expiresAt < :now', { now: new Date() })
+        .take(CLEANUP_BATCH_SIZE)
+        .getMany();
+
+      if (expiredSessions.length === 0) break;
+
+      for (const session of expiredSessions) {
+        try {
+          await this.processExpiredSession(session, bot);
+          totalProcessed++;
+        } catch (error) {
+          this.logger.error(`Failed to process expired session ${session.id}`, error);
+        }
+      }
+
+      if (expiredSessions.length < CLEANUP_BATCH_SIZE) break;
     }
 
-    // Process each expired session
-    for (const session of expiredSessions) {
-      try {
-        // Send timeout notification to group if bot is provided
-        if (bot && session.user && session.group) {
-          try {
-            const userMention = session.user.username 
-              ? `@${session.user.username}` 
-              : `[${session.user.firstName || '用户'}](tg://user?id=${session.userId})`;
-            
-            const timeoutMsg = await bot.getBot().api.sendMessage(
-              Number(session.groupId),
-              `⏰ ${userMention} 未在规定时间内完成验证，已被移除。`,
-              {
-                parse_mode: 'Markdown'
-              }
-            );
-            
-            // Schedule deletion after 30 seconds
-            setTimeout(async () => {
-              try {
-                await bot.getBot().api.deleteMessage(
-                  Number(session.groupId),
-                  timeoutMsg.message_id
-                );
-              } catch (error) {
-                this.logger.error('Failed to delete timeout notification', error);
-              }
-            }, 30000);
-            
-            // Delete the original welcome message
-            if (session.messageId) {
-              try {
-                await bot.getBot().api.deleteMessage(
-                  Number(session.groupId),
-                  session.messageId
-                );
-              } catch (error) {
-                this.logger.error('Failed to delete welcome message', error);
-              }
-            }
-            
-            // Kick the user from the group
-            try {
-              await bot.getBot().api.banChatMember(
-                Number(session.groupId),
-                Number(session.userId)
-              );
-              // Immediately unban so they can rejoin later
-              await bot.getBot().api.unbanChatMember(
-                Number(session.groupId),
-                Number(session.userId)
-              );
-            } catch (error) {
-              this.logger.error('Failed to kick user on timeout', error);
-            }
-          } catch (error) {
-            this.logger.error('Failed to handle timeout notification', error);
-          }
-        }
+    if (totalProcessed > 0) {
+      this.logger.info(`Cleaned up ${totalProcessed} expired sessions`);
+    }
+    return totalProcessed;
+  }
 
-        // Update session status
-        session.status = 'expired';
-        await this.sessionRepository.save(session);
+  private async processExpiredSession(session: JoinSession, bot?: Bot<any>): Promise<void> {
+    // Update session status first to prevent duplicate processing
+    session.status = 'expired';
+    await this.sessionRepository.save(session);
+
+    if (!bot || !session.user || !session.group) return;
+
+    const chatId = Number(session.groupId);
+    const userId = Number(session.userId);
+    const userMention = formatUserMention(session.user, session.userId);
+
+    try {
+      await sendTemporaryMessage(
+        bot,
+        chatId,
+        `⏰ ${userMention} 未在规定时间内完成验证，已被移除。`,
+        { parse_mode: 'Markdown' }
+      );
+    } catch (error) {
+      this.logger.error('Failed to send timeout notification', error);
+    }
+
+    // Delete the original welcome message
+    if (session.messageId) {
+      try {
+        await bot.api.deleteMessage(chatId, session.messageId);
       } catch (error) {
-        this.logger.error(`Failed to process expired session ${session.id}`, error);
+        this.logger.debug('Could not delete welcome message', { sessionId: session.id });
       }
     }
 
-    this.logger.info(`Marked ${expiredSessions.length} sessions as expired`);
-    return expiredSessions.length;
+    // Kick the user
+    try {
+      await kickUser(bot, chatId, userId);
+    } catch (error) {
+      this.logger.error('Failed to kick user on timeout', error);
+    }
   }
 
   generateVerificationUrl(userId: string, groupId: string, sessionId: string): string {

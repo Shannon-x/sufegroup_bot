@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+    <title>小菲 · 管理面板</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link rel="stylesheet" href="/css/modern-verify.css">
+    <style>
+        body { background: var(--bg); }
+        .page { align-items: flex-start; padding-top: 16px; }
+        .card { max-width: 100%; width: 100%; }
+        .card-body { padding: 20px; }
+
+        #loading { text-align: center; padding: 60px 20px; color: var(--text-secondary); }
+        #error { display: none; text-align: center; padding: 40px 20px; }
+
+        .group-list { display: flex; flex-direction: column; gap: 8px; }
+        .group-item {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 14px 16px; background: rgba(255,255,255,0.02);
+            border: 1px solid var(--border); border-radius: var(--radius-sm);
+            cursor: pointer; transition: background 0.15s;
+        }
+        .group-item:hover { background: rgba(255,255,255,0.05); }
+        .group-item .name { font-size: 15px; font-weight: 500; }
+        .group-item .arrow { color: var(--text-muted); }
+
+        .settings-panel { display: none; }
+        .settings-panel.active { display: block; }
+
+        .setting-row {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 14px 0; border-bottom: 1px solid var(--border);
+        }
+        .setting-row:last-child { border-bottom: none; }
+        .setting-label { font-size: 14px; color: var(--text); }
+        .setting-desc { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+
+        .toggle {
+            width: 44px; height: 24px; border-radius: 12px;
+            background: rgba(255,255,255,0.1); position: relative;
+            cursor: pointer; transition: background 0.2s; flex-shrink: 0;
+        }
+        .toggle.on { background: var(--accent); }
+        .toggle::after {
+            content: ''; position: absolute; top: 2px; left: 2px;
+            width: 20px; height: 20px; border-radius: 50%;
+            background: white; transition: transform 0.2s;
+        }
+        .toggle.on::after { transform: translateX(20px); }
+
+        .select-btn {
+            padding: 6px 12px; border-radius: 8px; font-size: 13px;
+            background: rgba(255,255,255,0.06); border: 1px solid var(--border);
+            color: var(--text); cursor: pointer;
+        }
+
+        .back-btn {
+            display: flex; align-items: center; gap: 6px;
+            font-size: 14px; color: var(--accent); cursor: pointer;
+            padding: 8px 0; margin-bottom: 12px; background: none; border: none;
+        }
+
+        .section-title {
+            font-size: 13px; font-weight: 600; color: var(--text-muted);
+            text-transform: uppercase; letter-spacing: 0.5px;
+            margin: 20px 0 10px;
+        }
+        .section-title:first-child { margin-top: 0; }
+
+        .saved-toast {
+            position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
+            padding: 10px 20px; background: var(--accent); color: white;
+            border-radius: 20px; font-size: 14px; opacity: 0;
+            transition: opacity 0.3s; pointer-events: none; z-index: 100;
+        }
+        .saved-toast.show { opacity: 1; }
+    </style>
+</head>
+<body>
+    <div class="page">
+        <div class="card">
+            <div class="card-body">
+                <div id="loading">加载中...</div>
+                <div id="error">
+                    <div class="error-icon" style="width:48px;height:48px;margin:0 auto 16px;">
+                        <svg viewBox="0 0 24 24" style="width:24px;height:24px;stroke:var(--error);stroke-width:2.5;fill:none;">
+                            <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                        </svg>
+                    </div>
+                    <p id="error-text" style="color:var(--text-secondary);font-size:14px;"></p>
+                </div>
+
+                <!-- Group list -->
+                <div id="groups" style="display:none;">
+                    <h2 style="font-size:18px;margin-bottom:16px;">选择群组</h2>
+                    <div id="group-list" class="group-list"></div>
+                </div>
+
+                <!-- Settings panel -->
+                <div id="settings" class="settings-panel">
+                    <button class="back-btn" onclick="showGroups()">← 返回</button>
+                    <h2 id="group-title" style="font-size:18px;margin-bottom:4px;"></h2>
+
+                    <div class="section-title">基本设置</div>
+                    <div class="setting-row">
+                        <div><div class="setting-label">入群验证</div><div class="setting-desc">新成员需要完成验证</div></div>
+                        <div class="toggle" id="t-verify" onclick="toggleSetting('verificationEnabled')"></div>
+                    </div>
+                    <div class="setting-row">
+                        <div><div class="setting-label">验证时长</div><div class="setting-desc" id="ttl-desc">10 分钟</div></div>
+                        <button class="select-btn" onclick="cycleTTL()">更改</button>
+                    </div>
+
+                    <div class="section-title">内容过滤</div>
+                    <div class="setting-row">
+                        <div><div class="setting-label">内容过滤</div></div>
+                        <div class="toggle" id="t-filter" onclick="toggleFilter('enabled')"></div>
+                    </div>
+                    <div class="setting-row">
+                        <div><div class="setting-label">链接过滤</div></div>
+                        <div class="toggle" id="t-urls" onclick="toggleFilter('blockUrls')"></div>
+                    </div>
+                    <div class="setting-row">
+                        <div><div class="setting-label">邀请链接过滤</div></div>
+                        <div class="toggle" id="t-invite" onclick="toggleFilter('blockInviteLinks')"></div>
+                    </div>
+                    <div class="setting-row">
+                        <div><div class="setting-label">手机号过滤</div></div>
+                        <div class="toggle" id="t-phone" onclick="toggleFilter('blockPhoneNumbers')"></div>
+                    </div>
+
+                    <div class="section-title">防刷屏</div>
+                    <div class="setting-row">
+                        <div><div class="setting-label">防刷屏</div></div>
+                        <div class="toggle" id="t-flood" onclick="toggleFlood()"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="saved-toast" id="toast">已保存</div>
+
+    <script>
+    var tg = window.Telegram.WebApp;
+    tg.expand();
+    tg.ready();
+
+    var initData = tg.initData;
+    var currentGroup = null;
+    var currentSettings = null;
+
+    function showError(msg) {
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('error').style.display = 'block';
+        document.getElementById('error-text').textContent = msg;
+    }
+
+    function toast(msg) {
+        var el = document.getElementById('toast');
+        el.textContent = msg || '已保存';
+        el.classList.add('show');
+        setTimeout(function() { el.classList.remove('show'); }, 1500);
+    }
+
+    async function api(path, body) {
+        var res = await fetch(path, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ initData: initData, ...body })
+        });
+        if (!res.ok) throw new Error(res.status);
+        return res.json();
+    }
+
+    async function loadGroups() {
+        try {
+            var data = await api('/api/admin/groups');
+            document.getElementById('loading').style.display = 'none';
+
+            if (data.groups.length === 0) {
+                showError('您没有管理权限的群组');
+                return;
+            }
+
+            var list = document.getElementById('group-list');
+            list.innerHTML = '';
+            data.groups.forEach(function(g) {
+                var el = document.createElement('div');
+                el.className = 'group-item';
+                el.innerHTML = '<span class="name">' + g.title + '</span><span class="arrow">›</span>';
+                el.onclick = function() { loadSettings(g); };
+                list.appendChild(el);
+            });
+
+            document.getElementById('groups').style.display = 'block';
+        } catch(e) {
+            showError('加载失败，请重试');
+        }
+    }
+
+    async function loadSettings(group) {
+        currentGroup = group;
+        document.getElementById('group-title').textContent = group.title;
+
+        try {
+            var data = await api('/api/admin/settings', { groupId: group.id });
+            currentSettings = data;
+            renderSettings();
+
+            document.getElementById('groups').style.display = 'none';
+            document.getElementById('settings').classList.add('active');
+        } catch(e) {
+            toast('加载失败');
+        }
+    }
+
+    function renderSettings() {
+        var s = currentSettings;
+        setToggle('t-verify', s.verificationEnabled);
+        document.getElementById('ttl-desc').textContent = s.ttlMinutes + ' 分钟';
+        setToggle('t-filter', s.filter.enabled);
+        setToggle('t-urls', s.filter.blockUrls);
+        setToggle('t-invite', s.filter.blockInviteLinks);
+        setToggle('t-phone', s.filter.blockPhoneNumbers);
+        setToggle('t-flood', s.filter.flood.enabled);
+    }
+
+    function setToggle(id, val) {
+        var el = document.getElementById(id);
+        if (val) el.classList.add('on'); else el.classList.remove('on');
+    }
+
+    function showGroups() {
+        document.getElementById('settings').classList.remove('active');
+        document.getElementById('groups').style.display = 'block';
+        currentGroup = null;
+    }
+
+    async function saveUpdate(updates) {
+        try {
+            await api('/api/admin/settings/update', { groupId: currentGroup.id, updates: updates });
+            toast();
+        } catch(e) {
+            toast('保存失败');
+        }
+    }
+
+    function toggleSetting(key) {
+        currentSettings[key] = !currentSettings[key];
+        renderSettings();
+        var u = {}; u[key] = currentSettings[key];
+        saveUpdate(u);
+    }
+
+    function toggleFilter(key) {
+        currentSettings.filter[key] = !currentSettings.filter[key];
+        renderSettings();
+        var f = {}; f[key] = currentSettings.filter[key];
+        saveUpdate({ filter: f });
+    }
+
+    function toggleFlood() {
+        currentSettings.filter.flood.enabled = !currentSettings.filter.flood.enabled;
+        renderSettings();
+        saveUpdate({ filter: { flood: currentSettings.filter.flood } });
+    }
+
+    var ttlPresets = [3, 5, 10, 15, 30];
+    function cycleTTL() {
+        var cur = ttlPresets.indexOf(currentSettings.ttlMinutes);
+        currentSettings.ttlMinutes = ttlPresets[(cur + 1) % ttlPresets.length];
+        renderSettings();
+        saveUpdate({ ttlMinutes: currentSettings.ttlMinutes });
+    }
+
+    loadGroups();
+    </script>
+</body>
+</html>

@@ -74,6 +74,16 @@ export class AuditService {
     return result;
   }
 
+  async deleteOldLogs(cutoffDate: Date): Promise<number> {
+    const result = await this.auditRepository
+      .createQueryBuilder()
+      .delete()
+      .where('createdAt < :cutoffDate', { cutoffDate })
+      .execute();
+
+    return result.affected || 0;
+  }
+
   async getVerificationStats(groupId: string, days: number = 7): Promise<{
     total: number;
     verified: number;
