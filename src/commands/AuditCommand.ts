@@ -18,10 +18,11 @@ export class AuditCommand extends BaseCommand {
     const groupId = ctx.chat!.id.toString();
 
     switch (subCommand) {
-      case 'recent':
+      case 'recent': {
         const limit = parseInt(args[1]) || 10;
         await this.showRecentLogs(ctx, groupId, Math.min(limit, 50));
         break;
+      }
       default:
         await ctx.reply('❌ 用法: /audit recent [数量]');
     }

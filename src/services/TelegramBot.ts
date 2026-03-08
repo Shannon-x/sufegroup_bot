@@ -752,7 +752,6 @@ export class TelegramBot {
 
     switch (action) {
       case 'warn': {
-        const remaining = config.maxWarnings - violations;
         const warnText = `⚠️ ${userMention} 您的消息包含违禁内容已被删除（${reasonStr}）\n累计警告 ${violations}/${config.maxWarnings}，达到上限将被禁言`;
         await sendTemporaryMessage(this.bot, chatIdNum, warnText, { parse_mode: 'Markdown' }, 15000);
         break;

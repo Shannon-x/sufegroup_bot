@@ -90,7 +90,7 @@ export class VerifyCommand extends BaseCommand {
       const keyboard = new InlineKeyboard()
         .url('🔐 点击验证', verifyUrl);
 
-      const settings = await this.groupService.getSettings(groupId);
+      await this.groupService.getSettings(groupId);
       const remainingMinutes = Math.ceil(
         (session.expiresAt.getTime() - Date.now()) / 60000
       );

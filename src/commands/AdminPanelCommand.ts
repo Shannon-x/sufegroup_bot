@@ -2,7 +2,7 @@ import { CommandContext } from 'grammy';
 import { InlineKeyboard } from 'grammy';
 import { BaseCommand } from './BaseCommand';
 import { MyContext } from '../services/TelegramBot';
-import { ContentFilterService, DEFAULT_FILTER_CONFIG } from '../services/ContentFilterService';
+import { ContentFilterService } from '../services/ContentFilterService';
 import { LevelService } from '../services/LevelService';
 import { config } from '../config/config';
 

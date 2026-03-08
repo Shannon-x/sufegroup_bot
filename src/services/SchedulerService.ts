@@ -4,7 +4,6 @@ import { AuditService } from './AuditService';
 import { LevelService } from './LevelService';
 import { UserService } from './UserService';
 import { TelegramBot } from './TelegramBot';
-import { sendTemporaryMessage } from '../utils/telegram';
 
 export class SchedulerService {
   private logger: Logger;

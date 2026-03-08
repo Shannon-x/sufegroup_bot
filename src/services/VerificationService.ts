@@ -183,7 +183,7 @@ export class VerificationService {
     let totalProcessed = 0;
 
     // Process in batches to avoid loading too many sessions at once
-    while (true) {
+    for (;;) {
       const expiredSessions = await this.sessionRepository
         .createQueryBuilder('session')
         .leftJoinAndSelect('session.user', 'user')

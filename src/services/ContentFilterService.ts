@@ -60,6 +60,7 @@ export interface FilterResult {
 // ── Built-in patterns (zero maintenance) ──
 
 // URL patterns
+// eslint-disable-next-line no-useless-escape
 const URL_REGEX = /https?:\/\/[^\s<>\"']+|www\.[^\s<>\"']+/gi;
 
 // Telegram invite links
@@ -79,6 +80,7 @@ const SPAM_PATTERNS: Array<{ pattern: RegExp; weight: number; label: string }> =
   // Crypto scam
   { pattern: /搬砖套利|跑[分量]|[USDT出入金].*[日稳赚]|合约[带跟]单|私募[额度]|百倍币|暴涨.*入场/i, weight: 30, label: '币圈诈骗' },
   // Contact solicitation
+  // eslint-disable-next-line no-misleading-character-class
   { pattern: /[加➕]我?[微➕薇V][信❤️xX]|[微➕薇V][信❤️xX]号?[:：]?\s*[a-zA-Z0-9_]+/i, weight: 30, label: '引流' },
   { pattern: /[加联]系?[QqＱ扣][QqＱ扣号][:：]?\s*\d+/i, weight: 30, label: '引流' },
   { pattern: /[私聊]我|咨询.*[客服详情]|详[聊询]|了解[更详]多/i, weight: 15, label: '推广' },

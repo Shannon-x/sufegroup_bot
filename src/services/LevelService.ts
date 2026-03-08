@@ -33,8 +33,6 @@ const XP_COOLDOWN_SECONDS = 30;
 
 // ── Cache TTL ──
 
-const SETTINGS_CACHE_TTL = 300; // 5 min
-
 export class LevelService {
   private profileRepo: Repository<UserGroupProfile>;
   private lotteryRepo: Repository<Lottery>;

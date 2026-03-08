@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import crypto from 'crypto';
 import { GroupService } from '../services/GroupService';
-import { ContentFilterService, DEFAULT_FILTER_CONFIG } from '../services/ContentFilterService';
+import { ContentFilterService } from '../services/ContentFilterService';
 import { LevelService } from '../services/LevelService';
 import { Logger } from '../utils/logger';
 import { config } from '../config/config';

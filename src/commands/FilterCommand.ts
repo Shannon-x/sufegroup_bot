@@ -1,7 +1,7 @@
 import { CommandContext } from 'grammy';
 import { BaseCommand } from './BaseCommand';
 import { MyContext } from '../services/TelegramBot';
-import { ContentFilterService, DEFAULT_FILTER_CONFIG, DEFAULT_FLOOD_CONFIG, FilterConfig, FloodConfig } from '../services/ContentFilterService';
+import { ContentFilterService, FilterConfig } from '../services/ContentFilterService';
 
 export class FilterCommand extends BaseCommand {
   command = 'filter';

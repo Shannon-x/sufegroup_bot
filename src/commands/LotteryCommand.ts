@@ -1,5 +1,4 @@
 import { CommandContext } from 'grammy';
-import { InlineKeyboard } from 'grammy';
 import { BaseCommand } from './BaseCommand';
 import { MyContext } from '../services/TelegramBot';
 import { LevelService } from '../services/LevelService';

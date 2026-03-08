@@ -89,7 +89,7 @@ export class SettingsCommand extends BaseCommand {
           updates.verificationEnabled = value.toLowerCase() === 'true';
           break;
 
-        case 'ttlMinutes':
+        case 'ttlMinutes': {
           const ttl = parseInt(value);
           if (isNaN(ttl) || ttl < 1 || ttl > 1440) {
             await ctx.reply('❌ 值必须是 1-1440 之间的数字（分钟）');
@@ -97,6 +97,7 @@ export class SettingsCommand extends BaseCommand {
           }
           updates.ttlMinutes = ttl;
           break;
+        }
 
         case 'autoAction':
           if (!['mute', 'kick'].includes(value.toLowerCase())) {
@@ -130,7 +131,7 @@ export class SettingsCommand extends BaseCommand {
           updates.deleteWelcomeMessage = value.toLowerCase() === 'true';
           break;
 
-        case 'deleteWelcomeMessageAfter':
+        case 'deleteWelcomeMessageAfter': {
           const delay = parseInt(value);
           if (isNaN(delay) || delay < 0 || delay > 3600) {
             await ctx.reply('❌ 值必须是 0-3600 之间的数字（秒）');
@@ -138,8 +139,9 @@ export class SettingsCommand extends BaseCommand {
           }
           updates.deleteWelcomeMessageAfter = delay;
           break;
+        }
 
-        case 'rateLimitPerMinute':
+        case 'rateLimitPerMinute': {
           const limit = parseInt(value);
           if (isNaN(limit) || limit < 1 || limit > 100) {
             await ctx.reply('❌ 值必须是 1-100 之间的数字');
@@ -147,6 +149,7 @@ export class SettingsCommand extends BaseCommand {
           }
           updates.rateLimitPerMinute = limit;
           break;
+        }
 
         case 'adminBypassVerification':
           if (!['true', 'false'].includes(value.toLowerCase())) {

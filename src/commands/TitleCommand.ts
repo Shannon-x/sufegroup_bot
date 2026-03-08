@@ -48,7 +48,7 @@ export class TitleCommand extends BaseCommand {
     }
 
     // Get or init custom titles
-    let titles = (customSettings.customTitles as Array<{minLevel: number; title: string}>) || [...LevelService.getDefaultTitles()];
+    const titles = (customSettings.customTitles as Array<{minLevel: number; title: string}>) || [...LevelService.getDefaultTitles()];
 
     // Update or add
     const existing = titles.findIndex(t => t.minLevel === level);
