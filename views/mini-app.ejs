@@ -1,282 +1,1160 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-    <title>小菲 · 管理面板</title>
-    <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <link rel="stylesheet" href="/css/modern-verify.css">
-    <style>
-        body { background: var(--bg); }
-        .page { align-items: flex-start; padding-top: 16px; }
-        .card { max-width: 100%; width: 100%; }
-        .card-body { padding: 20px; }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>小菲 · 管理面板</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+/* ── Design tokens: dark (default) ── */
+:root {
+  --bg:        #0d0d0d;
+  --surface:   #1c1c1e;
+  --surface2:  #2c2c2e;
+  --border:    rgba(255,255,255,0.10);
+  --border2:   rgba(255,255,255,0.18);
+  --text:      #f5f5f5;
+  --text2:     rgba(235,235,245,0.72);
+  --text3:     rgba(235,235,245,0.46);
+  --tog-off:   rgba(255,255,255,0.16);
+  --inp-bg:    rgba(255,255,255,0.07);
+  --cyc-bg:    rgba(255,255,255,0.10);
+  --accent:    #6366f1;
+  --accent-soft: rgba(99,102,241,0.18);
+  --success:   #30d158;
+  --success-soft: rgba(48,209,88,0.15);
+  --error:     #ff453a;
+  --error-soft: rgba(255,69,58,0.15);
+  --r: 12px; --r-sm: 8px;
+}
 
-        #loading { text-align: center; padding: 60px 20px; color: var(--text-secondary); }
-        #error { display: none; text-align: center; padding: 40px 20px; }
+/* ── Design tokens: light ── */
+html[data-theme="light"] {
+  --bg:        #f2f2f7;
+  --surface:   #ffffff;
+  --surface2:  #e5e5ea;
+  --border:    rgba(60,60,67,0.12);
+  --border2:   rgba(60,60,67,0.20);
+  --text:      #1c1c1e;
+  --text2:     rgba(28,28,30,0.70);
+  --text3:     rgba(28,28,30,0.45);
+  --tog-off:   rgba(120,120,128,0.20);
+  --inp-bg:    rgba(118,118,128,0.08);
+  --cyc-bg:    rgba(118,118,128,0.12);
+  --accent:    #5856d6;
+  --accent-soft: rgba(88,86,214,0.14);
+  --success:   #34c759;
+  --success-soft: rgba(52,199,89,0.14);
+  --error:     #ff3b30;
+  --error-soft: rgba(255,59,48,0.14);
+}
 
-        .group-list { display: flex; flex-direction: column; gap: 8px; }
-        .group-item {
-            display: flex; align-items: center; justify-content: space-between;
-            padding: 14px 16px; background: rgba(255,255,255,0.02);
-            border: 1px solid var(--border); border-radius: var(--radius-sm);
-            cursor: pointer; transition: background 0.15s;
-        }
-        .group-item:hover { background: rgba(255,255,255,0.05); }
-        .group-item .name { font-size: 15px; font-weight: 500; }
-        .group-item .arrow { color: var(--text-muted); }
+/* ── Base ── */
+*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  transition: background .2s, color .2s;
+}
 
-        .settings-panel { display: none; }
-        .settings-panel.active { display: block; }
+/* ── Screens ── */
+#screen-loading, #screen-error {
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; min-height: 100vh;
+  padding: 32px; text-align: center; gap: 14px; color: var(--text2);
+}
+#screen-error { display: none; }
+#screen-groups { display: none; padding: 20px 16px; }
+#screen-panel { display: none; height: 100vh; flex-direction: column; }
 
-        .setting-row {
-            display: flex; align-items: center; justify-content: space-between;
-            padding: 14px 0; border-bottom: 1px solid var(--border);
-        }
-        .setting-row:last-child { border-bottom: none; }
-        .setting-label { font-size: 14px; color: var(--text); }
-        .setting-desc { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+/* ── Spinner ── */
+.spin {
+  width: 24px; height: 24px;
+  border: 2.5px solid var(--border2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .7s linear infinite; flex-shrink: 0;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 
-        .toggle {
-            width: 44px; height: 24px; border-radius: 12px;
-            background: rgba(255,255,255,0.1); position: relative;
-            cursor: pointer; transition: background 0.2s; flex-shrink: 0;
-        }
-        .toggle.on { background: var(--accent); }
-        .toggle::after {
-            content: ''; position: absolute; top: 2px; left: 2px;
-            width: 20px; height: 20px; border-radius: 50%;
-            background: white; transition: transform 0.2s;
-        }
-        .toggle.on::after { transform: translateX(20px); }
+/* ── Theme toggle (floating) ── */
+.theme-fab {
+  position: fixed; top: 10px; right: 14px; z-index: 200;
+  background: var(--surface); border: 1px solid var(--border2);
+  border-radius: 50%; width: 34px; height: 34px;
+  font-size: 17px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+  transition: background .2s, border-color .2s;
+}
 
-        .select-btn {
-            padding: 6px 12px; border-radius: 8px; font-size: 13px;
-            background: rgba(255,255,255,0.06); border: 1px solid var(--border);
-            color: var(--text); cursor: pointer;
-        }
+/* ── Group list ── */
+.page-title { font-size: 22px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+.page-sub   { font-size: 13.5px; color: var(--text2); margin-bottom: 20px; }
+.group-item {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  margin-bottom: 8px; cursor: pointer; transition: background .15s;
+}
+.group-item:active { background: var(--surface2); }
+.gi-title { font-size: 15px; font-weight: 500; color: var(--text); }
+.gi-arr   { color: var(--text3); font-size: 18px; }
 
-        .back-btn {
-            display: flex; align-items: center; gap: 6px;
-            font-size: 14px; color: var(--accent); cursor: pointer;
-            padding: 8px 0; margin-bottom: 12px; background: none; border: none;
-        }
+/* ── Panel header ── */
+.panel-hd {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px; border-bottom: 1px solid var(--border);
+  background: var(--bg); flex-shrink: 0;
+}
+.panel-hd-name {
+  flex: 1; font-size: 14px; font-weight: 600; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.icon-btn {
+  background: none; border: none; color: var(--accent);
+  font-size: 13px; cursor: pointer; padding: 4px 7px;
+  border-radius: 6px; flex-shrink: 0; font-weight: 500;
+}
+.icon-btn:active { background: var(--accent-soft); }
 
-        .section-title {
-            font-size: 13px; font-weight: 600; color: var(--text-muted);
-            text-transform: uppercase; letter-spacing: 0.5px;
-            margin: 20px 0 10px;
-        }
-        .section-title:first-child { margin-top: 0; }
+/* ── Tabs ── */
+.tab-bar {
+  display: flex; gap: 4px; padding: 8px 12px;
+  overflow-x: auto; border-bottom: 1px solid var(--border);
+  background: var(--bg); flex-shrink: 0; scrollbar-width: none;
+}
+.tab-bar::-webkit-scrollbar { display: none; }
+.tab-btn {
+  padding: 5px 11px; border-radius: 16px; font-size: 12.5px; font-weight: 500;
+  background: none; border: 1px solid var(--border2);
+  color: var(--text2); cursor: pointer; white-space: nowrap;
+  flex-shrink: 0; transition: all .15s;
+}
+.tab-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
-        .saved-toast {
-            position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
-            padding: 10px 20px; background: var(--accent); color: white;
-            border-radius: 20px; font-size: 14px; opacity: 0;
-            transition: opacity 0.3s; pointer-events: none; z-index: 100;
-        }
-        .saved-toast.show { opacity: 1; }
-    </style>
+/* ── Tab content ── */
+.tab-contents { flex: 1; overflow-y: auto; }
+.tab-pane { display: none; padding: 14px 14px 30px; }
+.tab-pane.active { display: block; }
+
+/* ── Section ── */
+.sec { margin-bottom: 20px; }
+.sec-hd {
+  font-size: 11.5px; font-weight: 600; color: var(--text3);
+  text-transform: uppercase; letter-spacing: .6px; margin-bottom: 7px; padding-left: 2px;
+}
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r); overflow: hidden;
+}
+
+/* ── Row ── */
+.row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 14px; border-bottom: 1px solid var(--border); gap: 10px;
+}
+.row:last-child { border-bottom: none; }
+.row-lbl  { font-size: 14px; color: var(--text); font-weight: 400; }
+.row-sub  { font-size: 11.5px; color: var(--text3); margin-top: 2px; }
+
+/* ── Toggle ── */
+.tog {
+  width: 44px; height: 24px; border-radius: 12px;
+  background: var(--tog-off); position: relative;
+  cursor: pointer; flex-shrink: 0; transition: background .2s;
+}
+.tog.on { background: var(--accent); }
+.tog::after {
+  content: ''; position: absolute; top: 2px; left: 2px;
+  width: 20px; height: 20px; border-radius: 50%;
+  background: #fff; transition: transform .2s;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+}
+.tog.on::after { transform: translateX(20px); }
+
+/* ── Cycle button ── */
+.cyc {
+  padding: 5px 11px; border-radius: 7px; font-size: 12.5px; font-weight: 500;
+  background: var(--cyc-bg); border: 1px solid var(--border2);
+  color: var(--text); cursor: pointer; white-space: nowrap; flex-shrink: 0;
+  transition: background .15s;
+}
+.cyc:active { opacity: .75; }
+
+/* ── Input ── */
+.inp {
+  width: 100%;
+  background: var(--inp-bg); border: 1px solid var(--border2);
+  border-radius: var(--r-sm); color: var(--text);
+  font-size: 14px; padding: 8px 11px; outline: none;
+  -webkit-appearance: none; appearance: none;
+  transition: border-color .15s, background .15s;
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Segoe UI', system-ui, sans-serif;
+}
+.inp:focus { border-color: var(--accent); }
+.inp::placeholder { color: var(--text3); }
+.inp-sm { width: 72px; text-align: center; }
+
+/* ── Telegram Desktop (Linux) input fix ──
+   Qt WebEngine / Chromium WebView may inject user-select:none
+   and -webkit-text-fill-color that override normal input styles.
+   Explicit overrides are required for keyboard input to work.     */
+input, textarea, select {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  pointer-events: auto !important;
+  /* -webkit-text-fill-color overrides 'color' in WebKit/Blink */
+  -webkit-text-fill-color: var(--text) !important;
+  caret-color: var(--accent);
+}
+input::placeholder, textarea::placeholder {
+  -webkit-text-fill-color: var(--text3) !important;
+}
+
+/* ── Select ── */
+.form-sel {
+  width: 100%; background: var(--inp-bg); border: 1px solid var(--border2);
+  border-radius: var(--r-sm); color: var(--text);
+  font-size: 14px; padding: 8px 11px; outline: none;
+  -webkit-appearance: none; appearance: none;
+  font-family: inherit;
+}
+
+/* ── Add row ── */
+.add-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px; border-top: 1px solid var(--border);
+}
+.add-btn {
+  padding: 8px 14px; border-radius: var(--r-sm); font-size: 13px; font-weight: 600;
+  background: var(--accent); border: none; color: #fff; cursor: pointer; flex-shrink: 0;
+}
+
+/* ── Keyword tags ── */
+.kw-wrap { display: flex; flex-wrap: wrap; gap: 6px; padding: 12px 14px; }
+.kw-empty { color: var(--text3); font-size: 13px; padding: 14px; }
+.kw-tag {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 4px 6px 4px 10px; border-radius: 10px;
+  background: var(--accent-soft); border: 1px solid rgba(99,102,241,.25);
+  font-size: 12.5px; color: var(--accent);
+}
+html[data-theme="light"] .kw-tag { color: var(--accent); }
+.kw-del {
+  background: none; border: none; color: var(--accent);
+  cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px; opacity: .8;
+}
+
+/* ── Title rows ── */
+.ti-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 11px 14px; border-bottom: 1px solid var(--border);
+  cursor: pointer; transition: background .12s;
+}
+.ti-row:last-child { border-bottom: none; }
+.ti-row:active { background: var(--surface2); }
+.ti-row.editing { background: var(--accent-soft); }
+.ti-lv  { font-size: 12px; color: var(--text3); min-width: 54px; flex-shrink: 0; }
+.ti-txt { flex: 1; font-size: 14px; color: var(--text); }
+.ti-edit-hint { font-size: 11px; color: var(--accent); flex-shrink: 0; }
+.del-btn {
+  background: none; border: none; color: var(--error);
+  cursor: pointer; font-size: 20px; line-height: 1; padding: 0 2px;
+}
+
+/* ── Lottery ── */
+.lt-item { padding: 13px 14px; border-bottom: 1px solid var(--border); }
+.lt-item:last-child { border-bottom: none; }
+.lt-prize { font-size: 14.5px; font-weight: 600; color: var(--text); }
+.lt-meta  { font-size: 12px; color: var(--text2); margin-top: 5px; line-height: 1.6; }
+.lt-actions { display: flex; gap: 8px; margin-top: 10px; }
+.lt-btn { padding: 6px 14px; border-radius: 7px; font-size: 12.5px; font-weight: 500; border: none; cursor: pointer; }
+.lt-draw   { background: var(--success); color: #fff; }
+.lt-cancel { background: var(--error-soft); color: var(--error); border: 1px solid rgba(255,69,58,.3) !important; }
+
+/* ── Form rows ── */
+.form-row {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 11px 14px; border-bottom: 1px solid var(--border);
+}
+.form-row:last-child { border-bottom: none; }
+.form-lbl { font-size: 12.5px; color: var(--text2); font-weight: 500; }
+.form-sub {
+  display: block; margin: 4px 14px 14px; padding: 11px;
+  border-radius: var(--r-sm); background: var(--accent);
+  border: none; color: #fff;
+  font-size: 14px; font-weight: 600; cursor: pointer; width: calc(100% - 28px);
+}
+.form-sub:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ── Danger button ── */
+.danger-btn {
+  display: block; width: 100%; padding: 11px;
+  border-radius: var(--r-sm);
+  background: var(--error-soft); border: 1px solid rgba(255,69,58,.3);
+  color: var(--error); font-size: 13.5px; font-weight: 600; cursor: pointer; margin-top: 4px;
+}
+
+/* ── Toast ── */
+#toast {
+  position: fixed; bottom: 72px; left: 50%; transform: translateX(-50%);
+  padding: 9px 18px; border-radius: 20px; font-size: 13.5px;
+  background: #333; color: #fff;
+  opacity: 0; transition: opacity .25s;
+  pointer-events: none; z-index: 9999;
+  white-space: nowrap; max-width: 85vw; overflow: hidden; text-overflow: ellipsis;
+}
+html[data-theme="light"] #toast { background: #1c1c1e; }
+#toast.err { background: var(--error) !important; }
+#toast.vis { opacity: 1; }
+
+/* ── Empty / loading ── */
+.empty { text-align: center; padding: 24px 16px; color: var(--text3); font-size: 13px; }
+
+/* ── Err message ── */
+#err-msg { color: var(--text2); font-size: 14px; line-height: 1.7; white-space: pre-wrap; }
+</style>
 </head>
 <body>
-    <div class="page">
+
+<!-- Theme toggle (always visible) -->
+<button class="theme-fab" id="btn-theme" title="切换主题">🌙</button>
+
+<!-- Loading -->
+<div id="screen-loading">
+  <div class="spin"></div>
+  <span style="color:var(--text2)">加载中...</span>
+</div>
+
+<!-- Error -->
+<div id="screen-error">
+  <div style="font-size:44px;margin-bottom:4px">⚠️</div>
+  <p id="err-msg"></p>
+</div>
+
+<!-- Group list -->
+<div id="screen-groups">
+  <div class="page-title">管理面板</div>
+  <div class="page-sub">选择要管理的群组</div>
+  <div id="group-list"></div>
+</div>
+
+<!-- Settings panel -->
+<div id="screen-panel" style="flex-direction:column;">
+  <div class="panel-hd">
+    <button class="icon-btn" id="btn-back">← 返回</button>
+    <span class="panel-hd-name" id="panel-name"></span>
+    <button class="icon-btn" id="btn-refresh">↻</button>
+  </div>
+  <div class="tab-bar">
+    <button class="tab-btn active" data-tab="basic">⚙️ 设置</button>
+    <button class="tab-btn" data-tab="filter">🛡 过滤</button>
+    <button class="tab-btn" data-tab="flood">🌊 刷屏</button>
+    <button class="tab-btn" data-tab="titles">🏷 称号</button>
+    <button class="tab-btn" data-tab="lottery">🎰 抽奖</button>
+  </div>
+  <div class="tab-contents">
+
+    <!-- ⚙️ 设置 -->
+    <div id="tab-basic" class="tab-pane active">
+      <div class="sec">
+        <div class="sec-hd">入群验证</div>
         <div class="card">
-            <div class="card-body">
-                <div id="loading">加载中...</div>
-                <div id="error">
-                    <div class="error-icon" style="width:48px;height:48px;margin:0 auto 16px;">
-                        <svg viewBox="0 0 24 24" style="width:24px;height:24px;stroke:var(--error);stroke-width:2.5;fill:none;">
-                            <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
-                        </svg>
-                    </div>
-                    <p id="error-text" style="color:var(--text-secondary);font-size:14px;"></p>
-                </div>
-
-                <!-- Group list -->
-                <div id="groups" style="display:none;">
-                    <h2 style="font-size:18px;margin-bottom:16px;">选择群组</h2>
-                    <div id="group-list" class="group-list"></div>
-                </div>
-
-                <!-- Settings panel -->
-                <div id="settings" class="settings-panel">
-                    <button class="back-btn" onclick="showGroups()">← 返回</button>
-                    <h2 id="group-title" style="font-size:18px;margin-bottom:4px;"></h2>
-
-                    <div class="section-title">基本设置</div>
-                    <div class="setting-row">
-                        <div><div class="setting-label">入群验证</div><div class="setting-desc">新成员需要完成验证</div></div>
-                        <div class="toggle" id="t-verify" onclick="toggleSetting('verificationEnabled')"></div>
-                    </div>
-                    <div class="setting-row">
-                        <div><div class="setting-label">验证时长</div><div class="setting-desc" id="ttl-desc">10 分钟</div></div>
-                        <button class="select-btn" onclick="cycleTTL()">更改</button>
-                    </div>
-
-                    <div class="section-title">内容过滤</div>
-                    <div class="setting-row">
-                        <div><div class="setting-label">内容过滤</div></div>
-                        <div class="toggle" id="t-filter" onclick="toggleFilter('enabled')"></div>
-                    </div>
-                    <div class="setting-row">
-                        <div><div class="setting-label">链接过滤</div></div>
-                        <div class="toggle" id="t-urls" onclick="toggleFilter('blockUrls')"></div>
-                    </div>
-                    <div class="setting-row">
-                        <div><div class="setting-label">邀请链接过滤</div></div>
-                        <div class="toggle" id="t-invite" onclick="toggleFilter('blockInviteLinks')"></div>
-                    </div>
-                    <div class="setting-row">
-                        <div><div class="setting-label">手机号过滤</div></div>
-                        <div class="toggle" id="t-phone" onclick="toggleFilter('blockPhoneNumbers')"></div>
-                    </div>
-
-                    <div class="section-title">防刷屏</div>
-                    <div class="setting-row">
-                        <div><div class="setting-label">防刷屏</div></div>
-                        <div class="toggle" id="t-flood" onclick="toggleFlood()"></div>
-                    </div>
-                </div>
-            </div>
+          <div class="row">
+            <div><div class="row-lbl">入群验证</div><div class="row-sub">新成员需完成验证才能发言</div></div>
+            <div class="tog" id="t-verify"></div>
+          </div>
+          <div class="row">
+            <div class="row-lbl">验证时长</div>
+            <button class="cyc" id="btn-ttl">--</button>
+          </div>
+          <div class="row">
+            <div><div class="row-lbl">超时处理</div><div class="row-sub">验证超时后的操作</div></div>
+            <button class="cyc" id="btn-auto-action">--</button>
+          </div>
         </div>
+      </div>
     </div>
 
-    <div class="saved-toast" id="toast">已保存</div>
+    <!-- 🛡 过滤 -->
+    <div id="tab-filter" class="tab-pane">
+      <div class="sec">
+        <div class="sec-hd">内容过滤</div>
+        <div class="card">
+          <div class="row">
+            <div class="row-lbl">内容过滤总开关</div>
+            <div class="tog" id="t-filter"></div>
+          </div>
+          <div class="row">
+            <div class="row-lbl">链接过滤</div>
+            <div class="tog" id="t-urls"></div>
+          </div>
+          <div class="row">
+            <div class="row-lbl">邀请链接过滤</div>
+            <div class="tog" id="t-invite"></div>
+          </div>
+          <div class="row">
+            <div class="row-lbl">手机号过滤</div>
+            <div class="tog" id="t-phone"></div>
+          </div>
+          <div class="row">
+            <div class="row-lbl">频道转发过滤</div>
+            <div class="tog" id="t-forward"></div>
+          </div>
+          <div class="row">
+            <div><div class="row-lbl">违规处理方式</div><div class="row-sub">点击切换</div></div>
+            <button class="cyc" id="btn-filter-action">--</button>
+          </div>
+          <div class="row">
+            <div><div class="row-lbl">警告上限</div><div class="row-sub">超出后升级处罚</div></div>
+            <button class="cyc" id="btn-max-warn">--</button>
+          </div>
+        </div>
+      </div>
+      <div class="sec">
+        <div class="sec-hd">自定义关键词</div>
+        <div class="card">
+          <div id="kw-list"></div>
+          <div class="add-row">
+            <input type="text" id="kw-input" class="inp"
+              placeholder="输入关键词后按添加"
+              maxlength="50"
+              autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+            <button class="add-btn" id="btn-add-kw">添加</button>
+          </div>
+        </div>
+      </div>
+    </div>
 
-    <script>
-    var tg = window.Telegram.WebApp;
-    tg.expand();
-    tg.ready();
+    <!-- 🌊 刷屏 -->
+    <div id="tab-flood" class="tab-pane">
+      <div class="sec">
+        <div class="sec-hd">防刷屏设置</div>
+        <div class="card">
+          <div class="row">
+            <div class="row-lbl">防刷屏总开关</div>
+            <div class="tog" id="t-flood"></div>
+          </div>
+          <div class="row">
+            <div><div class="row-lbl">消息限制</div><div class="row-sub">点击切换预设</div></div>
+            <button class="cyc" id="btn-flood-preset">--</button>
+          </div>
+          <div class="row">
+            <div><div class="row-lbl">触发后操作</div><div class="row-sub">点击切换</div></div>
+            <button class="cyc" id="btn-flood-action">--</button>
+          </div>
+          <div class="row">
+            <div><div class="row-lbl">禁言时长</div><div class="row-sub">仅禁言操作时有效</div></div>
+            <button class="cyc" id="btn-flood-mute">--</button>
+          </div>
+        </div>
+      </div>
+    </div>
 
-    var initData = tg.initData;
-    var currentGroup = null;
-    var currentSettings = null;
+    <!-- 🏷 称号 -->
+    <div id="tab-titles" class="tab-pane">
+      <div class="sec">
+        <div class="sec-hd">等级称号列表</div>
+        <div class="card" id="titles-card"></div>
+      </div>
+      <div class="sec">
+        <div class="sec-hd">添加 / 修改称号</div>
+        <div class="card">
+          <div class="add-row">
+            <span style="font-size:13px;color:var(--text3);flex-shrink:0;font-weight:500;">Lv.</span>
+            <input type="number" id="title-lv" class="inp inp-sm"
+              placeholder="等级" min="1" max="999"
+              inputmode="numeric" autocomplete="off">
+            <input type="text" id="title-txt" class="inp"
+              placeholder="称号名称（支持 emoji）"
+              maxlength="30"
+              autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+              enterkeyhint="done">
+            <button class="add-btn" id="btn-add-title">确认</button>
+          </div>
+        </div>
+      </div>
+      <button class="danger-btn" id="btn-reset-titles">↩ 恢复默认称号</button>
+    </div>
 
-    function showError(msg) {
-        document.getElementById('loading').style.display = 'none';
-        document.getElementById('error').style.display = 'block';
-        document.getElementById('error-text').textContent = msg;
+    <!-- 🎰 抽奖 -->
+    <div id="tab-lottery" class="tab-pane">
+      <div class="sec">
+        <div class="sec-hd">进行中的抽奖</div>
+        <div class="card" id="lottery-card">
+          <div class="empty">
+            <span class="spin" style="vertical-align:middle;margin-right:6px;display:inline-block;"></span>加载中...
+          </div>
+        </div>
+      </div>
+      <div class="sec">
+        <div class="sec-hd">创建新抽奖</div>
+        <div class="card">
+          <div class="form-row">
+            <div class="form-lbl">🎁 奖品名称</div>
+            <input type="text" id="lt-prize" class="inp"
+              placeholder="例：红包20元、VIP月卡"
+              maxlength="100"
+              autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+              enterkeyhint="next">
+          </div>
+          <div class="form-row">
+            <div class="form-lbl">👥 中奖人数（1 – 50）</div>
+            <input type="number" id="lt-count" class="inp" value="1" min="1" max="50" inputmode="numeric">
+          </div>
+          <div class="form-row">
+            <div class="form-lbl">⏱ 持续时长</div>
+            <select id="lt-dur" class="form-sel">
+              <option value="15">15 分钟</option>
+              <option value="30" selected>30 分钟</option>
+              <option value="60">1 小时</option>
+              <option value="120">2 小时</option>
+              <option value="360">6 小时</option>
+              <option value="720">12 小时</option>
+              <option value="1440">24 小时</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <div class="form-lbl">📊 最低等级（0 = 不限）</div>
+            <input type="number" id="lt-level" class="inp" value="0" min="0" max="100" inputmode="numeric">
+          </div>
+          <div class="form-row">
+            <div class="form-lbl">💰 参与费用积分（0 = 免费）</div>
+            <input type="number" id="lt-coins" class="inp" value="0" min="0" inputmode="numeric">
+          </div>
+          <button class="form-sub" id="btn-create-lt">🎰 创建抽奖</button>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /tab-contents -->
+</div><!-- /screen-panel -->
+
+<div id="toast"></div>
+
+<script>
+/* ════════════════════════════════════════════
+   Telegram WebApp bootstrap
+════════════════════════════════════════════ */
+var tg = (window.Telegram && window.Telegram.WebApp) ||
+  { initData:'', colorScheme:'dark', expand:function(){}, ready:function(){}, showPopup:null };
+tg.expand(); tg.ready();
+var initData = tg.initData || '';
+
+/* ════════════════════════════════════════════
+   Theme
+════════════════════════════════════════════ */
+var _theme = (tg.colorScheme === 'light') ? 'light' : 'dark';
+
+function applyTheme(t) {
+  _theme = t;
+  document.documentElement.setAttribute('data-theme', t);
+  document.getElementById('btn-theme').textContent = t === 'dark' ? '☀️' : '🌙';
+}
+applyTheme(_theme);
+
+document.getElementById('btn-theme').addEventListener('click', function(){
+  applyTheme(_theme === 'dark' ? 'light' : 'dark');
+});
+
+/* ════════════════════════════════════════════
+   State
+════════════════════════════════════════════ */
+var S = {
+  group:    null,
+  settings: null,
+  titles:   null,
+  tab:      'basic',
+};
+
+/* ════════════════════════════════════════════
+   Helpers
+════════════════════════════════════════════ */
+function esc(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+var _toastTimer = null;
+function toast(msg, isErr) {
+  var el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'vis' + (isErr ? ' err' : '');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(function(){ el.className=''; }, 2400);
+}
+
+async function api(path, body) {
+  var payload = Object.assign({ initData: initData }, body || {});
+  var res = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) {
+    var j = {}; try { j = await res.clone().json(); } catch(e){}
+    throw new Error(j.error || ('HTTP ' + res.status));
+  }
+  return res.json();
+}
+
+function setTog(id, val) {
+  var el = document.getElementById(id);
+  if (el) el.classList.toggle('on', !!val);
+}
+
+/* ════════════════════════════════════════════
+   Screens
+════════════════════════════════════════════ */
+function show(id) {
+  var ids = ['screen-loading','screen-error','screen-groups','screen-panel'];
+  ids.forEach(function(sid){
+    var el = document.getElementById(sid);
+    if (sid === 'screen-panel')
+      el.style.display = sid === id ? 'flex' : 'none';
+    else
+      el.style.display = sid === id ? 'block' : 'none';
+  });
+}
+
+/* ════════════════════════════════════════════
+   Groups
+════════════════════════════════════════════ */
+async function loadGroups() {
+  show('screen-loading');
+  if (!initData) {
+    show('screen-error');
+    document.getElementById('err-msg').textContent =
+      '请通过 Telegram 机器人私聊中的按钮打开此页面。\n\n向机器人发送 /admin 即可获取入口。';
+    return;
+  }
+  try {
+    var data = await api('/api/admin/groups');
+    if (!data.groups || data.groups.length === 0) {
+      show('screen-error');
+      document.getElementById('err-msg').textContent =
+        '您没有可管理的群组。\n请确认机器人已加入群组且拥有管理员权限。';
+      return;
     }
+    var list = document.getElementById('group-list');
+    list.innerHTML = '';
+    data.groups.forEach(function(g){
+      var el = document.createElement('div');
+      el.className = 'group-item';
+      el.innerHTML =
+        '<span class="gi-title">'+esc(g.title)+'</span>'+
+        '<span class="gi-arr">›</span>';
+      el.addEventListener('click', function(){ openPanel(g); });
+      list.appendChild(el);
+    });
+    show('screen-groups');
+  } catch(e) {
+    show('screen-error');
+    document.getElementById('err-msg').textContent =
+      String(e).indexOf('401') !== -1
+        ? '身份验证失败，请关闭后重新从 Telegram 打开。'
+        : '加载失败：' + e.message;
+  }
+}
 
-    function toast(msg) {
-        var el = document.getElementById('toast');
-        el.textContent = msg || '已保存';
-        el.classList.add('show');
-        setTimeout(function() { el.classList.remove('show'); }, 1500);
+/* ════════════════════════════════════════════
+   Panel
+════════════════════════════════════════════ */
+function openPanel(group) {
+  S.group = group;
+  document.getElementById('panel-name').textContent = group.title;
+  show('screen-panel');
+  switchTab('basic');
+  loadSettings();
+}
+
+function closePanel() {
+  S.group = null; S.settings = null; S.titles = null;
+  loadGroups();
+}
+
+/* ════════════════════════════════════════════
+   Tabs
+════════════════════════════════════════════ */
+function switchTab(name) {
+  S.tab = name;
+  document.querySelectorAll('.tab-btn').forEach(function(b){
+    b.classList.toggle('active', b.dataset.tab === name);
+  });
+  document.querySelectorAll('.tab-pane').forEach(function(p){
+    p.classList.toggle('active', p.id === 'tab-' + name);
+  });
+  if (name === 'lottery') loadLotteries();
+}
+
+/* ════════════════════════════════════════════
+   Settings: load & debounced save
+════════════════════════════════════════════ */
+async function loadSettings() {
+  try {
+    var data = await api('/api/admin/settings', { groupId: S.group.id });
+    S.settings = data;
+    S.titles = JSON.parse(JSON.stringify(data.customTitles || []));
+    renderAll();
+  } catch(e) {
+    toast('设置加载失败：' + e.message, true);
+  }
+}
+
+var _saveTimer = null;
+var _pending = {};
+
+function scheduleSave(updates) {
+  Object.assign(_pending, updates);
+  clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(commitSave, 450);
+}
+
+async function commitSave() {
+  if (!S.group) return;
+  var upd = _pending; _pending = {};
+  try {
+    await api('/api/admin/settings/update', { groupId: S.group.id, updates: upd });
+    toast('已保存');
+  } catch(e) {
+    toast('保存失败：' + e.message, true);
+  }
+}
+
+function renderAll() {
+  renderBasic(); renderFilter(); renderFlood();
+  renderKeywords(); renderTitles();
+}
+
+/* ════════════════════════════════════════════
+   ⚙️ Basic tab
+════════════════════════════════════════════ */
+function renderBasic() {
+  var s = S.settings;
+  setTog('t-verify', s.verificationEnabled);
+  document.getElementById('btn-ttl').textContent = s.ttlMinutes + ' 分钟';
+  document.getElementById('btn-auto-action').textContent =
+    s.autoAction === 'mute' ? '🔇 禁言' : '👢 踢出';
+}
+
+var TTL_OPTS = [3,5,10,15,30];
+function cycleTTL() {
+  var i = TTL_OPTS.indexOf(S.settings.ttlMinutes);
+  S.settings.ttlMinutes = TTL_OPTS[(i+1) % TTL_OPTS.length];
+  renderBasic();
+  scheduleSave({ ttlMinutes: S.settings.ttlMinutes });
+}
+function cycleAutoAction() {
+  S.settings.autoAction = S.settings.autoAction === 'mute' ? 'kick' : 'mute';
+  renderBasic();
+  scheduleSave({ autoAction: S.settings.autoAction });
+}
+function togVerify() {
+  S.settings.verificationEnabled = !S.settings.verificationEnabled;
+  renderBasic();
+  scheduleSave({ verificationEnabled: S.settings.verificationEnabled });
+}
+
+/* ════════════════════════════════════════════
+   🛡 Filter tab
+════════════════════════════════════════════ */
+function renderFilter() {
+  var f = (S.settings && S.settings.filter) || {};
+  setTog('t-filter',  f.enabled);
+  setTog('t-urls',    f.blockUrls);
+  setTog('t-invite',  f.blockInviteLinks);
+  setTog('t-phone',   f.blockPhoneNumbers);
+  setTog('t-forward', f.blockForwards);
+  var al = { warn:'⚠️ 警告', mute:'🔇 禁言', ban:'🚫 封禁' };
+  document.getElementById('btn-filter-action').textContent = al[f.action] || '⚠️ 警告';
+  document.getElementById('btn-max-warn').textContent = (f.maxWarnings||3) + ' 次';
+}
+
+function togFilter(key) {
+  var f = S.settings.filter;
+  f[key] = !f[key]; renderFilter();
+  var u = {}; u[key] = f[key];
+  scheduleSave({ filter: u });
+}
+
+var FA = ['warn','mute','ban'];
+function cycleFilterAction() {
+  var f = S.settings.filter;
+  f.action = FA[(FA.indexOf(f.action)+1) % FA.length];
+  renderFilter();
+  scheduleSave({ filter: { action: f.action } });
+}
+function cycleMaxWarn() {
+  var f = S.settings.filter;
+  f.maxWarnings = (f.maxWarnings||3) >= 10 ? 3 : (f.maxWarnings||3)+1;
+  renderFilter();
+  scheduleSave({ filter: { maxWarnings: f.maxWarnings } });
+}
+
+/* Keywords */
+function renderKeywords() {
+  var kws = ((S.settings.filter||{}).customKeywords)||[];
+  var el = document.getElementById('kw-list');
+  if (kws.length === 0) {
+    el.innerHTML = '<div class="kw-empty">暂无自定义关键词</div>';
+    return;
+  }
+  el.innerHTML = '<div class="kw-wrap"></div>';
+  var wrap = el.querySelector('.kw-wrap');
+  kws.forEach(function(kw){
+    var tag = document.createElement('span');
+    tag.className = 'kw-tag';
+    tag.innerHTML = esc(kw) +
+      '<button class="kw-del" data-kw="'+esc(kw)+'">×</button>';
+    tag.querySelector('.kw-del').addEventListener('click', function(){
+      delKeyword(this.dataset.kw);
+    });
+    wrap.appendChild(tag);
+  });
+}
+function addKeyword() {
+  var inp = document.getElementById('kw-input');
+  var kw = (inp.value||'').trim().toLowerCase();
+  if (!kw) { toast('请输入关键词', true); return; }
+  var f = S.settings.filter;
+  if (!f.customKeywords) f.customKeywords = [];
+  if (f.customKeywords.includes(kw)) { toast('关键词已存在', true); return; }
+  f.customKeywords.push(kw);
+  renderKeywords();
+  scheduleSave({ filter: { customKeywords: f.customKeywords } });
+  inp.value = '';
+  inp.focus();
+}
+function delKeyword(kw) {
+  var f = S.settings.filter;
+  f.customKeywords = (f.customKeywords||[]).filter(function(k){ return k!==kw; });
+  renderKeywords();
+  scheduleSave({ filter: { customKeywords: f.customKeywords } });
+}
+
+/* ════════════════════════════════════════════
+   🌊 Flood tab
+════════════════════════════════════════════ */
+function renderFlood() {
+  var fl = ((S.settings.filter)||{}).flood || {};
+  setTog('t-flood', fl.enabled);
+  document.getElementById('btn-flood-preset').textContent =
+    (fl.maxMessages||10) + '条/' + (fl.windowSeconds||10) + '秒';
+  var al = { warn:'⚠️ 警告', mute:'🔇 禁言', ban:'🚫 封禁' };
+  document.getElementById('btn-flood-action').textContent = al[fl.action] || '🔇 禁言';
+  document.getElementById('btn-flood-mute').textContent = (fl.muteDuration||5) + ' 分钟';
+}
+
+function togFlood() {
+  var fl = S.settings.filter.flood;
+  fl.enabled = !fl.enabled; renderFlood();
+  scheduleSave({ filter: { flood: fl } });
+}
+
+var FP = [[5,10],[8,10],[10,10],[15,10],[20,10],[10,30],[15,30],[20,30]];
+function cycleFloodPreset() {
+  var fl = S.settings.filter.flood;
+  var i = FP.findIndex(function(p){ return p[0]===fl.maxMessages && p[1]===fl.windowSeconds; });
+  var n = FP[(i+1) % FP.length];
+  fl.maxMessages = n[0]; fl.windowSeconds = n[1];
+  renderFlood();
+  scheduleSave({ filter: { flood: fl } });
+}
+
+var FL = ['warn','mute','ban'];
+function cycleFloodAction() {
+  var fl = S.settings.filter.flood;
+  fl.action = FL[(FL.indexOf(fl.action)+1) % FL.length];
+  renderFlood();
+  scheduleSave({ filter: { flood: fl } });
+}
+
+var FM = [1,5,15,30,60];
+function cycleFloodMute() {
+  var fl = S.settings.filter.flood;
+  fl.muteDuration = FM[(FM.indexOf(fl.muteDuration)+1) % FM.length];
+  renderFlood();
+  scheduleSave({ filter: { flood: fl } });
+}
+
+/* ════════════════════════════════════════════
+   🏷 Titles tab
+════════════════════════════════════════════ */
+function renderTitles() {
+  var card = document.getElementById('titles-card');
+  if (!S.titles || S.titles.length === 0) {
+    card.innerHTML = '<div class="empty">暂无自定义称号（使用默认称号）</div>';
+    return;
+  }
+  var sorted = S.titles.slice().sort(function(a,b){ return b.minLevel - a.minLevel; });
+  card.innerHTML = '';
+  sorted.forEach(function(t){
+    var row = document.createElement('div');
+    row.className = 'ti-row';
+    row.innerHTML =
+      '<span class="ti-lv">Lv.'+t.minLevel+'+</span>'+
+      '<span class="ti-txt">'+esc(t.title)+'</span>'+
+      '<span class="ti-edit-hint">✏️ 编辑</span>'+
+      '<button class="del-btn" data-lv="'+t.minLevel+'">×</button>';
+
+    // Click row (except delete) → fill edit form
+    row.addEventListener('click', function(e){
+      if (e.target && e.target.classList && e.target.classList.contains('del-btn')) return;
+      // Highlight selected row
+      document.querySelectorAll('.ti-row').forEach(function(r){ r.classList.remove('editing'); });
+      row.classList.add('editing');
+      // Scroll to form and fill values
+      var lvEl  = document.getElementById('title-lv');
+      var txtEl = document.getElementById('title-txt');
+      lvEl.value  = String(t.minLevel);
+      txtEl.value = t.title;
+      // Focus the text field so user can start typing immediately
+      txtEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setTimeout(function(){ txtEl.focus(); txtEl.select(); }, 300);
+    });
+
+    row.querySelector('.del-btn').addEventListener('click', function(e){
+      e.stopPropagation();
+      deleteTitle(parseInt(this.dataset.lv));
+    });
+    card.appendChild(row);
+  });
+}
+
+function addTitle() {
+  var lvEl  = document.getElementById('title-lv');
+  var txtEl = document.getElementById('title-txt');
+  var lv  = parseInt(lvEl.value);
+  var txt = (txtEl.value||'').trim();
+  if (!lv || lv < 1 || lv > 999) { toast('等级范围 1–999', true); return; }
+  if (!txt) { toast('请输入称号文字', true); return; }
+  S.titles = (S.titles||[]).filter(function(t){ return t.minLevel !== lv; });
+  S.titles.push({ minLevel: lv, title: txt });
+  renderTitles();
+  saveTitlesNow();
+  lvEl.value = ''; txtEl.value = '';
+  // Remove editing highlight after save
+  document.querySelectorAll('.ti-row').forEach(function(r){ r.classList.remove('editing'); });
+  lvEl.focus();
+}
+
+function deleteTitle(lv) {
+  S.titles = (S.titles||[]).filter(function(t){ return t.minLevel !== lv; });
+  renderTitles();
+  saveTitlesNow();
+}
+
+function saveTitlesNow() {
+  // Flush any pending filter saves first, then save titles immediately
+  if (_saveTimer) { clearTimeout(_saveTimer); commitSave(); }
+  var payload = S.titles && S.titles.length > 0 ? S.titles : null;
+  api('/api/admin/settings/update', {
+    groupId: S.group.id,
+    updates: { customTitles: payload }
+  }).then(function(){ toast('称号已保存'); })
+    .catch(function(e){ toast('保存失败：'+e.message, true); });
+}
+
+function resetTitles() {
+  function doReset() {
+    S.titles = [];
+    renderTitles();
+    api('/api/admin/settings/update', {
+      groupId: S.group.id, updates: { customTitles: null }
+    }).then(function(){
+      toast('已恢复默认称号');
+      loadSettings();
+    }).catch(function(e){ toast('失败：'+e.message, true); });
+  }
+  if (tg.showPopup) {
+    tg.showPopup({
+      title: '恢复默认',
+      message: '确认恢复默认称号？当前所有自定义称号将被清除。',
+      buttons: [{ id:'ok', type:'destructive', text:'恢复默认' }, { type:'cancel' }]
+    }, function(bid){ if (bid === 'ok') doReset(); });
+  } else { doReset(); }
+}
+
+/* ════════════════════════════════════════════
+   🎰 Lottery tab
+════════════════════════════════════════════ */
+async function loadLotteries() {
+  if (!S.group) return;
+  var card = document.getElementById('lottery-card');
+  card.innerHTML =
+    '<div class="empty"><span class="spin" style="vertical-align:middle;margin-right:6px;display:inline-block;"></span>加载中...</div>';
+  try {
+    var data = await api('/api/admin/lottery/list', { groupId: S.group.id });
+    renderLotteries(data.lotteries || []);
+  } catch(e) {
+    card.innerHTML = '<div class="empty" style="color:var(--error)">加载失败：'+esc(e.message)+'</div>';
+  }
+}
+
+function renderLotteries(list) {
+  var card = document.getElementById('lottery-card');
+  if (list.length === 0) {
+    card.innerHTML = '<div class="empty">当前没有进行中的抽奖</div>';
+    return;
+  }
+  card.innerHTML = '';
+  list.forEach(function(l){
+    var remain = Math.max(0, Math.ceil((new Date(l.endsAt)-Date.now())/60000));
+    var meta = '#' + l.id + ' · ' + l.participants + ' 人参与 · 剩余 ' + remain + ' 分钟';
+    if (l.minLevel > 0) meta += ' · 需 Lv.' + l.minLevel;
+    if (l.costCoins > 0) meta += ' · 费用 ' + l.costCoins + ' 积分';
+    var item = document.createElement('div');
+    item.className = 'lt-item';
+    item.innerHTML =
+      '<div class="lt-prize">🎁 '+esc(l.prize)+'（'+l.winnerCount+' 人中奖）</div>'+
+      '<div class="lt-meta">'+esc(meta)+'</div>'+
+      '<div class="lt-actions">'+
+        '<button class="lt-btn lt-draw" data-id="'+l.id+'">🎉 立即开奖</button>'+
+        '<button class="lt-btn lt-cancel" data-id="'+l.id+'">取消</button>'+
+      '</div>';
+    item.querySelector('.lt-draw').addEventListener('click', function(){
+      drawLottery(parseInt(this.dataset.id));
+    });
+    item.querySelector('.lt-cancel').addEventListener('click', function(){
+      cancelLottery(parseInt(this.dataset.id));
+    });
+    card.appendChild(item);
+  });
+}
+
+async function drawLottery(id) {
+  try {
+    var r = await api('/api/admin/lottery/draw', { lotteryId: id });
+    toast('🎉 开奖成功！' + r.winnersCount + ' 人中奖，结果已发送至群组');
+    loadLotteries();
+  } catch(e) { toast('开奖失败：'+e.message, true); }
+}
+
+async function cancelLottery(id) {
+  try {
+    await api('/api/admin/lottery/cancel', { lotteryId: id });
+    toast('抽奖已取消，积分已退还');
+    loadLotteries();
+  } catch(e) { toast('取消失败：'+e.message, true); }
+}
+
+async function createLottery() {
+  var prize  = (document.getElementById('lt-prize').value||'').trim();
+  var count  = parseInt(document.getElementById('lt-count').value)||1;
+  var dur    = parseInt(document.getElementById('lt-dur').value)||30;
+  var level  = parseInt(document.getElementById('lt-level').value)||0;
+  var coins  = parseInt(document.getElementById('lt-coins').value)||0;
+  if (!prize) { toast('请输入奖品名称', true); return; }
+  if (count < 1 || count > 50) { toast('中奖人数需在 1–50 之间', true); return; }
+  var btn = document.getElementById('btn-create-lt');
+  btn.disabled = true; btn.textContent = '创建中...';
+  try {
+    var r = await api('/api/admin/lottery/create', {
+      groupId: S.group.id, prize: prize,
+      winnerCount: count, durationMinutes: dur,
+      minLevel: level, costCoins: coins
+    });
+    toast('🎰 抽奖 #'+r.lottery.id+' 已创建，公告已发送至群组！');
+    document.getElementById('lt-prize').value = '';
+    document.getElementById('lt-count').value = '1';
+    document.getElementById('lt-level').value = '0';
+    document.getElementById('lt-coins').value = '0';
+    loadLotteries();
+  } catch(e) {
+    toast('创建失败：'+e.message, true);
+  } finally {
+    btn.disabled = false; btn.textContent = '🎰 创建抽奖';
+  }
+}
+
+/* ════════════════════════════════════════════
+   Event bindings — all via addEventListener,
+   isComposing guard prevents CJK IME conflicts
+════════════════════════════════════════════ */
+document.addEventListener('DOMContentLoaded', function(){
+
+  // Navigation
+  document.getElementById('btn-back').addEventListener('click', closePanel);
+  document.getElementById('btn-refresh').addEventListener('click', function(){
+    loadSettings();
+    if (S.tab === 'lottery') loadLotteries();
+    toast('已刷新');
+  });
+
+  // Tabs
+  document.querySelectorAll('.tab-btn').forEach(function(b){
+    b.addEventListener('click', function(){ switchTab(this.dataset.tab); });
+  });
+
+  // ── 设置 ──
+  document.getElementById('t-verify').addEventListener('click', togVerify);
+  document.getElementById('btn-ttl').addEventListener('click', cycleTTL);
+  document.getElementById('btn-auto-action').addEventListener('click', cycleAutoAction);
+
+  // ── 过滤 ──
+  document.getElementById('t-filter').addEventListener('click',  function(){ togFilter('enabled'); });
+  document.getElementById('t-urls').addEventListener('click',    function(){ togFilter('blockUrls'); });
+  document.getElementById('t-invite').addEventListener('click',  function(){ togFilter('blockInviteLinks'); });
+  document.getElementById('t-phone').addEventListener('click',   function(){ togFilter('blockPhoneNumbers'); });
+  document.getElementById('t-forward').addEventListener('click', function(){ togFilter('blockForwards'); });
+  document.getElementById('btn-filter-action').addEventListener('click', cycleFilterAction);
+  document.getElementById('btn-max-warn').addEventListener('click', cycleMaxWarn);
+  document.getElementById('btn-add-kw').addEventListener('click', addKeyword);
+  // isComposing guard: prevents CJK Enter-confirm from firing addKeyword
+  document.getElementById('kw-input').addEventListener('keydown', function(e){
+    if (e.key === 'Enter' && !e.isComposing) addKeyword();
+  });
+
+  // ── 刷屏 ──
+  document.getElementById('t-flood').addEventListener('click', togFlood);
+  document.getElementById('btn-flood-preset').addEventListener('click', cycleFloodPreset);
+  document.getElementById('btn-flood-action').addEventListener('click', cycleFloodAction);
+  document.getElementById('btn-flood-mute').addEventListener('click', cycleFloodMute);
+
+  // ── 称号 ──
+  document.getElementById('btn-add-title').addEventListener('click', addTitle);
+  document.getElementById('btn-reset-titles').addEventListener('click', resetTitles);
+  // isComposing guard for both title inputs
+  document.getElementById('title-lv').addEventListener('keydown', function(e){
+    if (e.key === 'Enter' && !e.isComposing) {
+      document.getElementById('title-txt').focus();
     }
+  });
+  document.getElementById('title-txt').addEventListener('keydown', function(e){
+    if (e.key === 'Enter' && !e.isComposing) addTitle();
+  });
 
-    async function api(path, body) {
-        var res = await fetch(path, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ initData: initData, ...body })
-        });
-        if (!res.ok) throw new Error(res.status);
-        return res.json();
+  // ── 抽奖 ──
+  document.getElementById('btn-create-lt').addEventListener('click', createLottery);
+  document.getElementById('lt-prize').addEventListener('keydown', function(e){
+    if (e.key === 'Enter' && !e.isComposing)
+      document.getElementById('lt-count').focus();
+  });
+
+  // Telegram Desktop (Linux) focus fix:
+  // Qt WebEngine sometimes doesn't forward focus to inputs on click.
+  // Using pointerdown (fires before click) forces the element to be focused.
+  document.addEventListener('pointerdown', function(e){
+    var el = e.target;
+    if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) {
+      setTimeout(function(){ el.focus(); }, 0);
     }
+  }, true);
 
-    async function loadGroups() {
-        try {
-            var data = await api('/api/admin/groups');
-            document.getElementById('loading').style.display = 'none';
-
-            if (data.groups.length === 0) {
-                showError('您没有管理权限的群组');
-                return;
-            }
-
-            var list = document.getElementById('group-list');
-            list.innerHTML = '';
-            data.groups.forEach(function(g) {
-                var el = document.createElement('div');
-                el.className = 'group-item';
-                el.innerHTML = '<span class="name">' + g.title + '</span><span class="arrow">›</span>';
-                el.onclick = function() { loadSettings(g); };
-                list.appendChild(el);
-            });
-
-            document.getElementById('groups').style.display = 'block';
-        } catch(e) {
-            showError('加载失败，请重试');
-        }
-    }
-
-    async function loadSettings(group) {
-        currentGroup = group;
-        document.getElementById('group-title').textContent = group.title;
-
-        try {
-            var data = await api('/api/admin/settings', { groupId: group.id });
-            currentSettings = data;
-            renderSettings();
-
-            document.getElementById('groups').style.display = 'none';
-            document.getElementById('settings').classList.add('active');
-        } catch(e) {
-            toast('加载失败');
-        }
-    }
-
-    function renderSettings() {
-        var s = currentSettings;
-        setToggle('t-verify', s.verificationEnabled);
-        document.getElementById('ttl-desc').textContent = s.ttlMinutes + ' 分钟';
-        setToggle('t-filter', s.filter.enabled);
-        setToggle('t-urls', s.filter.blockUrls);
-        setToggle('t-invite', s.filter.blockInviteLinks);
-        setToggle('t-phone', s.filter.blockPhoneNumbers);
-        setToggle('t-flood', s.filter.flood.enabled);
-    }
-
-    function setToggle(id, val) {
-        var el = document.getElementById(id);
-        if (val) el.classList.add('on'); else el.classList.remove('on');
-    }
-
-    function showGroups() {
-        document.getElementById('settings').classList.remove('active');
-        document.getElementById('groups').style.display = 'block';
-        currentGroup = null;
-    }
-
-    async function saveUpdate(updates) {
-        try {
-            await api('/api/admin/settings/update', { groupId: currentGroup.id, updates: updates });
-            toast();
-        } catch(e) {
-            toast('保存失败');
-        }
-    }
-
-    function toggleSetting(key) {
-        currentSettings[key] = !currentSettings[key];
-        renderSettings();
-        var u = {}; u[key] = currentSettings[key];
-        saveUpdate(u);
-    }
-
-    function toggleFilter(key) {
-        currentSettings.filter[key] = !currentSettings.filter[key];
-        renderSettings();
-        var f = {}; f[key] = currentSettings.filter[key];
-        saveUpdate({ filter: f });
-    }
-
-    function toggleFlood() {
-        currentSettings.filter.flood.enabled = !currentSettings.filter.flood.enabled;
-        renderSettings();
-        saveUpdate({ filter: { flood: currentSettings.filter.flood } });
-    }
-
-    var ttlPresets = [3, 5, 10, 15, 30];
-    function cycleTTL() {
-        var cur = ttlPresets.indexOf(currentSettings.ttlMinutes);
-        currentSettings.ttlMinutes = ttlPresets[(cur + 1) % ttlPresets.length];
-        renderSettings();
-        saveUpdate({ ttlMinutes: currentSettings.ttlMinutes });
-    }
-
+  // Start
+  if (!window.Telegram || !window.Telegram.WebApp) {
+    show('screen-error');
+    document.getElementById('err-msg').textContent = '请在 Telegram 客户端内打开此页面';
+  } else {
     loadGroups();
-    </script>
+  }
+});
+</script>
 </body>
 </html>

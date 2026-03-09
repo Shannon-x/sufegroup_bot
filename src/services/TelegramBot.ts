@@ -10,7 +10,7 @@ import { ContentFilterService } from '../services/ContentFilterService';
 import { LevelService } from '../services/LevelService';
 import { redisService } from '../services/RedisService';
 import { CommandHandler } from '../commands/CommandHandler';
-import { InlineKeyboard } from 'grammy';
+import { InlineKeyboard, Keyboard } from 'grammy';
 import { sendTemporaryMessage } from '../utils/telegram';
 
 export interface SessionData {
@@ -110,6 +110,21 @@ export class TelegramBot {
       }
     });
 
+    // Handle "添加到群聊" reply-keyboard button tap (private chat only)
+    this.bot.hears('➕ 添加到群聊', async (ctx) => {
+      if (ctx.chat?.type !== 'private') return;
+      try {
+        const botUsername = config.bot.username || 'bot';
+        const addToGroupUrl = `https://t.me/${botUsername}?startgroup=true`;
+        await ctx.reply(
+          '点击下方按钮将我添加到你的群组，添加后请将我设置为管理员（需要删除消息、封禁用户权限）。',
+          { reply_markup: new InlineKeyboard().url('➕ 添加到群聊', addToGroupUrl) }
+        );
+      } catch (error) {
+        this.logger.error('Error handling add-to-group button', error);
+      }
+    });
+
     // Handle bot being added to groups
     this.bot.on('my_chat_member', async (ctx) => {
       try {
@@ -165,6 +180,22 @@ export class TelegramBot {
           }
         } catch (error) {
           this.logger.error('Error in message filter', error);
+        }
+      } else if (ctx.chat?.type === 'private' && ctx.from?.id) {
+        // Private chat: ensure the persistent keyboard is visible.
+        // Commands and hears() handlers run before this middleware, so only
+        // unhandled messages reach here. We send the keyboard once per user
+        // (tracked in Redis) so it doesn't spam on every message.
+        const userId = ctx.from.id;
+        const cacheKey = `kb_shown:${userId}`;
+        try {
+          const already = await redisService.get(cacheKey);
+          if (!already) {
+            await redisService.set(cacheKey, '1', 86400 * 30); // 30 days
+            await this.sendWelcomeKeyboard(ctx);
+          }
+        } catch {
+          // Non-critical: keyboard display failure should not break other handling
         }
       }
       await next();
@@ -238,20 +269,41 @@ export class TelegramBot {
         }
       );
     } else {
-      const botUsername = config.bot.username || 'bot';
-      const addToGroupUrl = `https://t.me/${botUsername}?startgroup=true`;
-
-      const keyboard = new InlineKeyboard()
-        .url('➕ 添加到群聊', addToGroupUrl);
-
-      await ctx.reply(
-        '👋 你好！\n\n小菲是一个群组管理验证的机器人。\n\n主要功能：\n• 新成员入群验证\n• 防止机器人和广告\n• 自动清理未验证用户\n\n点击下方按钮将我添加到您的群组：',
-        {
-          reply_markup: keyboard,
-          parse_mode: 'Markdown'
-        }
-      );
+      // Mark keyboard as shown so the auto-show fallback doesn't duplicate it
+      if (ctx.from?.id) {
+        await redisService.set(`kb_shown:${ctx.from.id}`, '1', 86400 * 30).catch(() => {});
+      }
+      await this.sendWelcomeKeyboard(ctx);
     }
+  }
+
+  /** Send the welcome message with persistent reply keyboard. */
+  private async sendWelcomeKeyboard(ctx: MyContext) {
+    const replyKeyboard = new Keyboard();
+    if (config.bot.webhookDomain) {
+      replyKeyboard.webApp('📱 管理面板', `${config.bot.webhookDomain}/mini-app`);
+    }
+    replyKeyboard.text('➕ 添加到群聊').resized().persistent();
+
+    await ctx.reply(
+      '👋 *你好！我是小菲*\n\n' +
+      '我是一个功能完整的群组管理机器人，可以帮助你管理群组成员与内容。\n\n' +
+      '*主要功能：*\n' +
+      '• 🔐 新成员入群验证，防机器人 & 广告\n' +
+      '• 🛡 内容过滤（链接/手机号/关键词/频道转发）\n' +
+      '• 🌊 防刷屏保护\n' +
+      '• 📊 活跃度等级与称号系统\n' +
+      '• 🎰 群内抽奖活动\n\n' +
+      '*快速上手：*\n' +
+      '1️⃣ 点击聊天框下方「➕ 添加到群聊」按钮\n' +
+      '2️⃣ 在群组里将我设置为*管理员*（需要删除消息、封禁用户权限）\n' +
+      '3️⃣ 点击「📱 管理面板」按钮进行配置\n\n' +
+      '⚠️ *注意：必须先设为管理员，否则机器人无法正常工作。*',
+      {
+        reply_markup: replyKeyboard,
+        parse_mode: 'Markdown',
+      }
+    );
   }
 
   private async handleBotStatusUpdate(ctx: MyContext) {
@@ -911,6 +963,17 @@ export class TelegramBot {
         { command: 'start', description: '开始使用机器人' },
         { command: 'help', description: '显示帮助信息' },
       ]);
+
+      // Set persistent Mini App menu button for all private chats
+      if (config.bot.webhookDomain) {
+        await this.bot.api.setChatMenuButton({
+          menu_button: {
+            type: 'web_app',
+            text: '📱 管理面板',
+            web_app: { url: `${config.bot.webhookDomain}/mini-app` },
+          } as any,
+        });
+      }
 
       this.logger.info('Bot commands updated successfully');
     } catch (error) {

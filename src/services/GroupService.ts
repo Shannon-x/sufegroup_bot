@@ -130,20 +130,32 @@ export class GroupService {
   }
 
   /**
-   * Get all groups where a user is admin (for Mini App).
+   * Get groups where a specific user is an admin (for Mini App).
+   * Checks are run in parallel with a per-group timeout to avoid slow serial API calls.
    */
   async getAdminGroups(userId: string, botApi: any): Promise<Group[]> {
     const groups = await this.groupRepository.find({ where: { isActive: true }, relations: ['settings'] });
-    const adminGroups: Group[] = [];
 
-    for (const group of groups) {
-      try {
-        const isAdmin = await this.isAdminCached(Number(group.id), Number(userId), botApi);
-        if (isAdmin) adminGroups.push(group);
-      } catch {
-        // Skip groups where we can't check
-      }
-    }
-    return adminGroups;
+    // Wrap each check with a 3-second timeout so a single unresponsive group can't stall the whole list
+    const withTimeout = (promise: Promise<boolean>, ms: number): Promise<boolean> =>
+      Promise.race([
+        promise,
+        new Promise<boolean>((_, reject) => setTimeout(() => reject(new Error('timeout')), ms)),
+      ]);
+
+    const checks = await Promise.allSettled(
+      groups.map(async (group) => {
+        const isAdmin = await withTimeout(
+          this.isAdminCached(Number(group.id), Number(userId), botApi),
+          3000,
+        );
+        return isAdmin ? group : null;
+      }),
+    );
+
+    return checks
+      .filter((r): r is PromiseFulfilledResult<Group | null> => r.status === 'fulfilled')
+      .map((r) => r.value)
+      .filter((g): g is Group => g !== null);
   }
 }

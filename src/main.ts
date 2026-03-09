@@ -54,17 +54,23 @@ async function bootstrap() {
         directives: {
           defaultSrc: ["'self'"],
           scriptSrc: ["'self'", "'unsafe-inline'", 'https://challenges.cloudflare.com', 'https://telegram.org'],
+          // Allow inline event handlers (onclick=...) required by Mini App
+          scriptSrcAttr: ["'unsafe-inline'"],
           styleSrc: ["'self'", "'unsafe-inline'"],
           frameSrc: ['https://challenges.cloudflare.com'],
-          connectSrc: ["'self'", 'https://challenges.cloudflare.com'],
+          connectSrc: ["'self'", 'https://challenges.cloudflare.com', 'https://telegram.org'],
           imgSrc: ["'self'", 'data:', 'https:'],
           fontSrc: ["'self'", 'https:', 'data:'],
           objectSrc: ["'none'"],
           mediaSrc: ["'self'"],
           childSrc: ["'none'"],
+          // Allow Telegram clients to embed Mini App
+          frameAncestors: ['https://web.telegram.org', 'https://desktop.telegram.org', 'https://ss.telegram.org', 'https://k.telegram.org'],
         },
       },
       crossOriginEmbedderPolicy: false,
+      // Disable X-Frame-Options so frame-ancestors CSP takes effect for Telegram embedding
+      xFrameOptions: false,
       hsts: {
         maxAge: 31536000,
         includeSubDomains: true,

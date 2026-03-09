@@ -58,16 +58,37 @@ export class AdminPanelCommand extends BaseCommand {
   }
 
   private async showMainMenu(ctx: CommandContext<MyContext>) {
+    // Private chat: show Mini App launcher (web_app buttons only work in private chats)
+    if (ctx.chat?.type === 'private') {
+      if (config.bot.webhookDomain) {
+        const keyboard = new InlineKeyboard()
+          .webApp('📱 打开管理面板', `${config.bot.webhookDomain}/mini-app`);
+        await ctx.reply(
+          '👋 点击下方按钮，在 Telegram 内打开管理面板 Mini App：',
+          { reply_markup: keyboard },
+        );
+      } else {
+        await ctx.reply('❌ Mini App 未配置，请联系管理员设置 BOT_WEBHOOK_DOMAIN。');
+      }
+      return;
+    }
+
     if (!await this.requireAdmin(ctx)) return;
 
     const groupId = ctx.chat!.id.toString();
+    // Ensure group exists in DB before getting settings
+    await this.groupService.findOrCreate(ctx.chat!);
     const settings = await this.groupService.getSettings(groupId);
-    if (!settings) return;
+    if (!settings) {
+      await ctx.reply('❌ 群组初始化失败，请重试');
+      return;
+    }
 
     const filterConfig = this.contentFilter.getFilterConfig(settings.customSettings);
     const on = '✅';
     const off = '❌';
 
+    // web_app buttons are NOT allowed in group chats (Telegram restriction)
     const keyboard = new InlineKeyboard()
       .text(`${settings.verificationEnabled ? on : off} 入群验证`, 'ap:toggle_verify')
       .text(`${filterConfig.enabled ? on : off} 内容过滤`, 'ap:toggle_filter').row()
@@ -78,9 +99,8 @@ export class AdminPanelCommand extends BaseCommand {
       .text('🏷 自定义称号', 'ap:menu_titles')
       .text('📊 群组统计', 'ap:show_stats').row();
 
-    // Mini App button if webhook domain is configured
     if (config.bot.webhookDomain) {
-      keyboard.webApp('📱 管理面板', `${config.bot.webhookDomain}/mini-app`);
+      keyboard.url('📱 Mini App（私聊打开）', `https://t.me/${config.bot.username}`);
     }
 
     await ctx.reply('⚙️ *管理面板*\n\n点击按钮快速切换设置：', {
@@ -291,6 +311,7 @@ export class AdminPanelCommand extends BaseCommand {
     const filterConfig = this.contentFilter.getFilterConfig(settings.customSettings);
     const on = '✅', off = '❌';
 
+    // web_app buttons are NOT allowed in group chats (Telegram restriction)
     const keyboard = new InlineKeyboard()
       .text(`${settings.verificationEnabled ? on : off} 入群验证`, 'ap:toggle_verify')
       .text(`${filterConfig.enabled ? on : off} 内容过滤`, 'ap:toggle_filter').row()
@@ -302,7 +323,7 @@ export class AdminPanelCommand extends BaseCommand {
       .text('📊 群组统计', 'ap:show_stats').row();
 
     if (config.bot.webhookDomain) {
-      keyboard.webApp('📱 管理面板', `${config.bot.webhookDomain}/mini-app`);
+      keyboard.url('📱 Mini App（私聊打开）', `https://t.me/${config.bot.username}`);
     }
 
     try {
