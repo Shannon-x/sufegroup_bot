@@ -12,13 +12,14 @@
 
 | 模块 | 功能 |
 |------|------|
-| **入群验证** | Cloudflare Turnstile 人机验证，超时自动踢出/禁言 |
+| **入群验证** | Mini App 内嵌 Cloudflare Turnstile 人机验证，无需跳出 TG，超时自动踢 |
 | **内容过滤** | 内置垃圾广告识别、链接/邀请/手机号/频道转发拦截、自定义关键词 |
 | **防刷屏** | 滑动窗口频率限制，自动警告/禁言/封禁 |
 | **等级系统** | 发言获取经验值，自动升级，可自定义各级称号 |
 | **每日签到** | 连续签到积分奖励，7天/30天里程碑加成 |
 | **抽奖系统** | 等级门槛、积分花费、自动/手动开奖，群内公告 |
-| **Mini App** | Telegram 内嵌可视化管理面板，5 个功能标签页 |
+| **排行榜**   | Mini App 内嵌可视化群大盘：支持经验榜与资产榜展示及排名查询 |
+| **Mini App** | Telegram 内嵌可视化管理面板全集成 |
 | **权限控制** | 每个 API 端点实时验证 Telegram 管理员身份 |
 | **审计日志** | 所有管理操作记录，90 天自动清理 |
 
@@ -84,6 +85,7 @@ BOT_TOKEN=your_bot_token          # 从 @BotFather 获取
 BOT_USERNAME=your_bot_username    # 不带 @
 BOT_WEBHOOK_DOMAIN=https://your-domain.com
 BOT_WEBHOOK_SECRET=random_string  # openssl rand -hex 32
+BOT_MINIAPP_SHORT_NAME=app        # BotFather 中配置的 Web App 短名称 (强烈推荐)
 
 # 数据库
 DB_PASSWORD=strong_password       # openssl rand -hex 16
@@ -149,7 +151,36 @@ nano .env
 
 docker compose build
 docker compose up -d
+docker compose up -d
 ```
+
+---
+
+## 🚀 版本升级指南 (至 v1.3.x+)
+
+最新的版本中，我们对整个流程进行了极大的翻新。过去用户点击入群验证需要跳转到第三方浏览器，而从新版开始，**入群验证**与群成员的数据**排行榜**都已经被完全整合进了 Telegram 自带的 Mini App 中，不再有割裂感！
+
+为了让您的现有 Bot 拥抱全新的内嵌体验，老用户请按以下三步走进行快速迁移：
+
+### 1. 配置 Telegram Web App
+- 打开您的 [@BotFather](https://t.me/botfather)，发送 `/newapp` 指令（或通过 `/mybots` -> `Bot Settings` -> `Menu Button` -> `Configure menu button`）。
+- 按照提示选择您的机器人，设置标题与描述。
+- **Web App URL (核心)**: 这里请输入您服务署名的 URL，并加上 `/mini-app` 后缀。例如：`https://your-domain.com/mini-app`。
+- **Short Name (必填)**: BotFather 会要求你设定一个短名字，比如 `app`、`verify` 或 `rank`。请记住这个名字！
+
+### 2. 更新环境变量
+用编辑器打开您服务器上的 `.env` 文件，加入您上一阶段获取到的 Short Name：
+```env
+BOT_MINIAPP_SHORT_NAME=您设置的短名字
+```
+
+### 3. 重启生效
+更新代码后，重新编译或者拉取新镜像，并重启服务：
+```bash
+docker compose build  # 如果您是本地编译
+docker compose up -d
+```
+> *注：如果您没有配置 `BOT_MINIAPP_SHORT_NAME` 这个环境变量，没关系，为了防止报错，系统会自动无损降级回旧版本的“私聊提供外部浏览器验证”的流程。*
 
 ---
 
