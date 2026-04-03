@@ -1,6 +1,6 @@
 {
   "name": "telegram-group-bot",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Telegram group management bot with Cloudflare Turnstile verification",
   "main": "dist/main.js",
   "scripts": {
