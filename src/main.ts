@@ -53,12 +53,12 @@ async function bootstrap() {
       contentSecurityPolicy: {
         directives: {
           defaultSrc: ["'self'"],
-          scriptSrc: ["'self'", "'unsafe-inline'", 'https://challenges.cloudflare.com', 'https://telegram.org'],
+          scriptSrc: ["'self'", "'unsafe-inline'", 'https://challenges.cloudflare.com', 'https://telegram.org', 'https://js.hcaptcha.com', 'https://newassets.hcaptcha.com'],
           // Allow inline event handlers (onclick=...) required by Mini App
           scriptSrcAttr: ["'unsafe-inline'"],
-          styleSrc: ["'self'", "'unsafe-inline'"],
-          frameSrc: ['https://challenges.cloudflare.com'],
-          connectSrc: ["'self'", 'https://challenges.cloudflare.com', 'https://telegram.org'],
+          styleSrc: ["'self'", "'unsafe-inline'", 'https://newassets.hcaptcha.com'],
+          frameSrc: ['https://challenges.cloudflare.com', 'https://newassets.hcaptcha.com'],
+          connectSrc: ["'self'", 'https://challenges.cloudflare.com', 'https://telegram.org', 'https://api.hcaptcha.com', 'https://newassets.hcaptcha.com'],
           imgSrc: ["'self'", 'data:', 'https:'],
           fontSrc: ["'self'", 'https:', 'data:'],
           objectSrc: ["'none'"],
