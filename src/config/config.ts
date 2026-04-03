@@ -31,6 +31,10 @@ const envSchema = z.object({
   TURNSTILE_SITE_KEY: z.string(),
   TURNSTILE_SECRET_KEY: z.string(),
   
+  // hCaptcha (Optional)
+  HCAPTCHA_SITE_KEY: z.string().optional(),
+  HCAPTCHA_SECRET_KEY: z.string().optional(),
+  
   // Security
   JWT_SECRET: z.string(),
   HMAC_SECRET: z.string().optional(),
@@ -76,6 +80,10 @@ export const config = {
   turnstile: {
     siteKey: env.TURNSTILE_SITE_KEY,
     secretKey: env.TURNSTILE_SECRET_KEY,
+  },
+  hcaptcha: {
+    siteKey: env.HCAPTCHA_SITE_KEY,
+    secretKey: env.HCAPTCHA_SECRET_KEY,
   },
   security: {
     jwtSecret: env.JWT_SECRET,

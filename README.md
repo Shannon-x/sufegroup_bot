@@ -97,6 +97,10 @@ REDIS_PASSWORD=strong_password    # openssl rand -hex 16
 TURNSTILE_SITE_KEY=your_site_key
 TURNSTILE_SECRET_KEY=your_secret_key
 
+# hCaptcha (选填：为电脑端用户提供备用双轨验证方案)
+HCAPTCHA_SITE_KEY=your_hcaptcha_sitekey
+HCAPTCHA_SECRET_KEY=your_hcaptcha_secret
+
 # 安全密钥
 JWT_SECRET=random_string          # openssl rand -hex 32
 HMAC_SECRET=random_string         # openssl rand -hex 32

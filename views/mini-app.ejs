@@ -6,6 +6,7 @@
 <title>小菲 · 管理面板</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
+<script src="https://js.hcaptcha.com/1/api.js?render=explicit" async defer></script>
 <style>
 /* ── Design tokens: dark (default) ── */
 :root {
@@ -451,6 +452,13 @@ html[data-theme="light"] #toast { background: #1c1c1e; }
   background: var(--accent); border: none; color: #fff;
   font-size: 14px; font-weight: 600; cursor: pointer;
 }
+.v-warn {
+  margin: 16px 0; padding: 10px 14px; border-radius: 8px;
+  background: rgba(234, 179, 8, 0.15); border: 1px solid rgba(234, 179, 8, 0.5);
+  color: #ca8a04; font-size: 13px; font-weight: 500;
+  text-align: center;
+}
+html[data-theme="dark"] .v-warn { color: #fde047; }
 /* ── Leaderboard screen ── */
 #screen-leaderboard { display: none; min-height: 100vh; padding: 20px 16px; padding-bottom: 40px; }
 .lb-header { text-align: center; margin-bottom: 20px; }
@@ -525,8 +533,21 @@ html[data-theme="light"] #toast { background: #1c1c1e; }
       </div>
     </div>
 
+    <% if (typeof hcaptchaSiteKey !== 'undefined' && hcaptchaSiteKey) { %>
+    <div id="v-dual-nav" style="display:none;">
+      <div class="v-warn">⚠️ 电脑端遇到“正在验证…”一直卡住？<br>请在下方尝试切换为 hCaptcha</div>
+      <div class="lb-tabs" style="margin-bottom:12px;">
+        <div class="lb-tab active" id="v-tab-cf" onclick="switchCaptcha('cf')">🛡 CF 无感 (推荐)</div>
+        <div class="lb-tab" id="v-tab-hc" onclick="switchCaptcha('hc')">🧩 hCaptcha</div>
+      </div>
+    </div>
+    <% } %>
+
     <div class="verify-captcha" id="v-captcha">
       <div class="verify-captcha-wrap" id="v-turnstile-container"></div>
+      <% if (typeof hcaptchaSiteKey !== 'undefined' && hcaptchaSiteKey) { %>
+      <div class="verify-captcha-wrap" id="v-hcaptcha-container" style="display:none;"></div>
+      <% } %>
       <button class="verify-btn" id="v-submit" disabled>完成验证</button>
       <div class="verify-msg error" id="v-error"></div>
       <div class="verify-msg success" id="v-success"></div>
@@ -1412,9 +1433,13 @@ document.addEventListener('DOMContentLoaded', function(){
 /* ════════════════════════════════════════════
    🔐 Verification Mode
 ════════════════════════════════════════════ */
-var SITE_KEY = '<%= siteKey %>';
+var SITE_KEY = '<%= typeof siteKey !== "undefined" ? siteKey : "" %>';
+var HCAPTCHA_SITE_KEY = '<%= typeof hcaptchaSiteKey !== "undefined" ? hcaptchaSiteKey : "" %>';
 var _vTimer = null;
 var _vTurnstileToken = null;
+var _vHcaptchaToken = null;
+var _activeCaptcha = 'cf';
+var _hcWidgetId = null;
 var _vSessionId = null;
 var _vTotalSeconds = 0;
 var _vRemaining = 0;
@@ -1451,6 +1476,12 @@ async function initVerification(sessionId) {
     document.getElementById('v-handle').textContent = data.username ? '@' + data.username : '';
     document.getElementById('v-user-section').style.display = 'flex';
     document.getElementById('v-timer-section').style.display = 'block';
+
+    // Verify Dual Nav
+    if (HCAPTCHA_SITE_KEY) {
+      var dnav = document.getElementById('v-dual-nav');
+      if (dnav) dnav.style.display = 'block';
+    }
 
     // Timer
     _vTotalSeconds = data.ttlSeconds;
@@ -1496,12 +1527,69 @@ function renderTurnstile() {
     theme: _theme,
     callback: function(token) {
       _vTurnstileToken = token;
+      _vHcaptchaToken = null;
       document.getElementById('v-submit').disabled = false;
     },
     'error-callback': function() {
-      showVerifyMsg('error', '人机验证组件加载失败，请刷新重试');
+      showVerifyMsg('error', 'CF人机验证组件加载失败被拦截，您可以尝试切换');
     }
   });
+}
+
+function renderHCaptcha() {
+  var container = document.getElementById('v-hcaptcha-container');
+  if (_hcWidgetId !== null) {
+    window.hcaptcha.reset(_hcWidgetId);
+  } else {
+    _hcWidgetId = window.hcaptcha.render(container, {
+      sitekey: HCAPTCHA_SITE_KEY,
+      theme: _theme,
+      callback: function(token) {
+        _vHcaptchaToken = token;
+        _vTurnstileToken = null;
+        document.getElementById('v-submit').disabled = false;
+      },
+      'error-callback': function() {
+        showVerifyMsg('error', 'hCaptcha加载失败，请重试');
+      }
+    });
+  }
+}
+
+function switchCaptcha(type) {
+  if (_activeCaptcha === type) return;
+  _activeCaptcha = type;
+  _vTurnstileToken = null;
+  _vHcaptchaToken = null;
+  document.getElementById('v-submit').disabled = true;
+  hideVerifyMsg();
+
+  var tabCf = document.getElementById('v-tab-cf');
+  var tabHc = document.getElementById('v-tab-hc');
+  if (tabCf) tabCf.classList.remove('active');
+  if (tabHc) tabHc.classList.remove('active');
+  
+  var activeTab = document.getElementById('v-tab-' + type);
+  if (activeTab) activeTab.classList.add('active');
+
+  if (type === 'cf') {
+    document.getElementById('v-hcaptcha-container').style.display = 'none';
+    document.getElementById('v-turnstile-container').style.display = 'block';
+    renderTurnstile();
+  } else {
+    document.getElementById('v-turnstile-container').style.display = 'none';
+    document.getElementById('v-hcaptcha-container').style.display = 'block';
+    if (window.hcaptcha) {
+      renderHCaptcha();
+    } else {
+      var hw = setInterval(function() {
+        if (window.hcaptcha) {
+          clearInterval(hw);
+          renderHCaptcha();
+        }
+      }, 200);
+    }
+  }
 }
 
 function updateVerifyTimer() {
@@ -1522,7 +1610,7 @@ function updateVerifyTimer() {
 }
 
 async function submitVerification() {
-  if (!_vTurnstileToken) {
+  if (!_vTurnstileToken && !_vHcaptchaToken) {
     showVerifyMsg('error', '请先完成人机验证');
     return;
   }
@@ -1540,7 +1628,8 @@ async function submitVerification() {
       body: JSON.stringify({
         initData: initData,
         sessionId: _vSessionId,
-        turnstileToken: _vTurnstileToken
+        turnstileToken: _vTurnstileToken || undefined,
+        hcaptchaToken: _vHcaptchaToken || undefined
       })
     });
     var data = await res.json();
@@ -1559,10 +1648,13 @@ async function submitVerification() {
       btn.disabled = false;
       btn.classList.remove('loading');
       btn.textContent = '完成验证';
-      // Reset Turnstile for retry
+      // Reset Tokens for retry
       _vTurnstileToken = null;
-      if (window.turnstile) {
+      _vHcaptchaToken = null;
+      if (_activeCaptcha === 'cf' && window.turnstile) {
         renderTurnstile();
+      } else if (_activeCaptcha === 'hc' && window.hcaptcha && _hcWidgetId !== null) {
+        window.hcaptcha.reset(_hcWidgetId);
       }
     }
   } catch (e) {

@@ -7,6 +7,7 @@ import { LevelService } from '../services/LevelService';
 import { UserService } from '../services/UserService';
 import { VerificationService } from '../services/VerificationService';
 import { TurnstileService } from '../services/TurnstileService';
+import { HCaptchaService } from '../services/HCaptchaService';
 import { AuditService } from '../services/AuditService';
 import { Logger } from '../utils/logger';
 import { config } from '../config/config';
@@ -85,6 +86,7 @@ export class MiniAppController {
   private userService: UserService;
   private verificationService: VerificationService;
   private turnstileService: TurnstileService;
+  private hcaptchaService: HCaptchaService;
   private auditService: AuditService;
   private bot: TelegramBot;
   private logger: Logger;
@@ -96,6 +98,7 @@ export class MiniAppController {
     this.userService = new UserService();
     this.verificationService = new VerificationService();
     this.turnstileService = new TurnstileService();
+    this.hcaptchaService = new HCaptchaService();
     this.auditService = new AuditService();
     this.bot = bot;
     this.logger = new Logger('MiniAppController');
@@ -107,6 +110,7 @@ export class MiniAppController {
       return reply.view('mini-app', {
         botUsername: config.bot.username || 'bot',
         siteKey: this.turnstileService.getSiteKey(),
+        hcaptchaSiteKey: this.hcaptchaService.getSiteKey() || '',
       });
     });
 
@@ -385,6 +389,7 @@ export class MiniAppController {
         username: user?.username || '',
         ttlSeconds: remainingSeconds,
         siteKey: this.turnstileService.getSiteKey(),
+        hcaptchaSiteKey: this.hcaptchaService.getSiteKey() || '',
       });
     });
 
@@ -393,7 +398,8 @@ export class MiniAppController {
       const parsed = z.object({
         initData: z.string().min(1),
         sessionId: z.string().min(1),
-        turnstileToken: z.string().min(1),
+        turnstileToken: z.string().optional(),
+        hcaptchaToken: z.string().optional(),
       }).safeParse(request.body);
       if (!parsed.success) return reply.code(400).send({ error: 'Invalid request' });
 
@@ -401,7 +407,11 @@ export class MiniAppController {
       if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
 
       const remoteIp = request.ip;
-      const { sessionId, turnstileToken } = parsed.data;
+      const { sessionId, turnstileToken, hcaptchaToken } = parsed.data;
+
+      if (!turnstileToken && !hcaptchaToken) {
+        return reply.code(400).send({ success: false, message: '请完成人机交互验证' });
+      }
 
       this.logger.info('Mini App verification request', { userId, sessionId, ip: remoteIp });
 
@@ -429,14 +439,25 @@ export class MiniAppController {
       // Increment attempts
       await this.verificationService.incrementAttempts(session.id);
 
-      // Verify Turnstile
-      const turnstileResult = await this.turnstileService.verify(turnstileToken, remoteIp);
-      if (!turnstileResult.success) {
-        this.logger.warn('Mini App Turnstile verification failed', {
-          userId, sessionId,
-          errors: turnstileResult['error-codes'],
-        });
-        return reply.code(400).send({ success: false, message: '人机验证失败，请重试' });
+      // Verify Provider
+      if (hcaptchaToken) {
+        const hcResult = await this.hcaptchaService.verify(hcaptchaToken, remoteIp);
+        if (!hcResult.success) {
+          this.logger.warn('Mini App HCaptcha verification failed', {
+            userId, sessionId,
+            errors: hcResult['error-codes'],
+          });
+          return reply.code(400).send({ success: false, message: 'hCaptcha 人机验证失败，请重试' });
+        }
+      } else if (turnstileToken) {
+        const turnstileResult = await this.turnstileService.verify(turnstileToken, remoteIp);
+        if (!turnstileResult.success) {
+          this.logger.warn('Mini App Turnstile verification failed', {
+            userId, sessionId,
+            errors: turnstileResult['error-codes'],
+          });
+          return reply.code(400).send({ success: false, message: 'CF 人机验证失败，请重试' });
+        }
       }
 
       // Mark session as verified
