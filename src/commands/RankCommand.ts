@@ -41,7 +41,9 @@ export class RankCommand extends BaseCommand {
     // Auto-delete the invoking message if possible
     try {
       await ctx.deleteMessage();
-    } catch (e) {}
+    } catch (e) {
+      // ignore
+    }
 
     await sendTemporaryMessage(
       this.bot,

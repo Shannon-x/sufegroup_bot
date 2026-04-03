@@ -1,7 +1,6 @@
 import { Bot } from 'grammy';
 import { MyContext } from '../services/TelegramBot';
-import { GroupService } from '../services/GroupService';
-import { ContentFilterService, FilterConfig } from '../services/ContentFilterService';
+import { ContentFilterService } from '../services/ContentFilterService';
 import { AuditService } from '../services/AuditService';
 import { redisService } from '../services/RedisService';
 import { Logger } from '../utils/logger';

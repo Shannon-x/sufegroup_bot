@@ -1,5 +1,4 @@
 import { Bot } from 'grammy';
-import { ParseMode } from 'grammy/types';
 import { Logger } from './logger';
 
 const logger = new Logger('TelegramUtils');
