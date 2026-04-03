@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { Repository, LessThan } from 'typeorm';
 import { AppDataSource } from '../config/database';
 import { UserGroupProfile } from '../entities/UserGroupProfile';
@@ -213,6 +214,14 @@ export class LevelService {
     });
   }
 
+  async getCoinsLeaderboard(groupId: string, limit: number = 10): Promise<UserGroupProfile[]> {
+    return this.profileRepo.find({
+      where: { groupId },
+      order: { coins: 'DESC' },
+      take: limit,
+    });
+  }
+
   async getRank(userId: string, groupId: string): Promise<number> {
     const profile = await this.profileRepo.findOne({ where: { userId, groupId } });
     if (!profile) return 0;
@@ -220,6 +229,18 @@ export class LevelService {
     const count = await this.profileRepo
       .createQueryBuilder('p')
       .where('p."groupId" = :groupId AND p.xp > :xp', { groupId, xp: profile.xp })
+      .getCount();
+
+    return count + 1;
+  }
+
+  async getCoinsRank(userId: string, groupId: string): Promise<number> {
+    const profile = await this.profileRepo.findOne({ where: { userId, groupId } });
+    if (!profile) return 0;
+
+    const count = await this.profileRepo
+      .createQueryBuilder('p')
+      .where('p."groupId" = :groupId AND p.coins > :coins', { groupId, coins: profile.coins })
       .getCount();
 
     return count + 1;
@@ -292,7 +313,12 @@ export class LevelService {
       return { success: false, reason: '无人参与，抽奖已取消' };
     }
 
-    const shuffled = [...lottery.participants].sort(() => Math.random() - 0.5);
+    const shuffled = [...lottery.participants];
+    // Fisher-Yates shuffle with cryptographically secure randomness
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = crypto.randomInt(0, i + 1);
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
     const winners = shuffled.slice(0, Math.min(lottery.winnerCount, shuffled.length));
 
     lottery.winners = winners;

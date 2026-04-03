@@ -1,18 +1,91 @@
 import { FastifyInstance } from 'fastify';
 import crypto from 'crypto';
+import { z } from 'zod';
 import { GroupService } from '../services/GroupService';
 import { ContentFilterService } from '../services/ContentFilterService';
 import { LevelService } from '../services/LevelService';
 import { UserService } from '../services/UserService';
+import { VerificationService } from '../services/VerificationService';
+import { TurnstileService } from '../services/TurnstileService';
+import { AuditService } from '../services/AuditService';
 import { Logger } from '../utils/logger';
 import { config } from '../config/config';
 import { TelegramBot } from '../services/TelegramBot';
+import { sendTemporaryMessage, unrestrictUser, formatUserMention } from '../utils/telegram';
+
+// ── Request body schemas ──
+
+const InitDataBody = z.object({
+  initData: z.string().min(1),
+});
+
+const GroupBody = z.object({
+  initData: z.string().min(1),
+  groupId: z.string().min(1),
+});
+
+const FloodConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  maxMessages: z.number().int().min(3).max(100).optional(),
+  windowSeconds: z.number().int().min(5).max(300).optional(),
+  action: z.enum(['warn', 'mute', 'ban']).optional(),
+  muteDuration: z.number().int().min(1).max(1440).optional(),
+  deleteExcess: z.boolean().optional(),
+}).optional();
+
+const FilterUpdateSchema = z.object({
+  enabled: z.boolean().optional(),
+  blockUrls: z.boolean().optional(),
+  blockInviteLinks: z.boolean().optional(),
+  blockPhoneNumbers: z.boolean().optional(),
+  blockForwards: z.boolean().optional(),
+  newUserLinkDelay: z.number().int().min(0).max(1440).optional(),
+  customKeywords: z.array(z.string().max(100)).max(200).optional(),
+  whitelistUrls: z.array(z.string().max(200)).max(50).optional(),
+  action: z.enum(['warn', 'mute', 'ban']).optional(),
+  muteDuration: z.number().int().min(1).max(1440).optional(),
+  maxWarnings: z.number().int().min(1).max(20).optional(),
+  flood: FloodConfigSchema,
+}).optional();
+
+const UpdateSettingsBody = z.object({
+  initData: z.string().min(1),
+  groupId: z.string().min(1),
+  updates: z.object({
+    verificationEnabled: z.boolean().optional(),
+    ttlMinutes: z.number().int().min(1).max(60).optional(),
+    autoAction: z.enum(['mute', 'kick']).optional(),
+    filter: FilterUpdateSchema,
+    customTitles: z.array(z.object({
+      minLevel: z.number().int().min(1).max(100),
+      title: z.string().min(1).max(50),
+    })).max(20).nullable().optional(),
+  }),
+});
+
+const CreateLotteryBody = z.object({
+  initData: z.string().min(1),
+  groupId: z.string().min(1),
+  prize: z.string().min(1).max(500),
+  winnerCount: z.number().int().min(1).max(50),
+  durationMinutes: z.number().int().min(1).max(10080),
+  minLevel: z.number().int().min(0).max(100).default(0),
+  costCoins: z.number().int().min(0).max(100000).default(0),
+});
+
+const LotteryActionBody = z.object({
+  initData: z.string().min(1),
+  lotteryId: z.number().int().positive(),
+});
 
 export class MiniAppController {
   private groupService: GroupService;
   private contentFilter: ContentFilterService;
   private levelService: LevelService;
   private userService: UserService;
+  private verificationService: VerificationService;
+  private turnstileService: TurnstileService;
+  private auditService: AuditService;
   private bot: TelegramBot;
   private logger: Logger;
 
@@ -21,6 +94,9 @@ export class MiniAppController {
     this.contentFilter = new ContentFilterService();
     this.levelService = new LevelService();
     this.userService = new UserService();
+    this.verificationService = new VerificationService();
+    this.turnstileService = new TurnstileService();
+    this.auditService = new AuditService();
     this.bot = bot;
     this.logger = new Logger('MiniAppController');
   }
@@ -30,12 +106,16 @@ export class MiniAppController {
     fastify.get('/mini-app', async (_request, reply) => {
       return reply.view('mini-app', {
         botUsername: config.bot.username || 'bot',
+        siteKey: this.turnstileService.getSiteKey(),
       });
     });
 
     // ── Groups ──
-    fastify.post<{ Body: { initData: string } }>('/api/admin/groups', async (request, reply) => {
-      const userId = this.validateInitData(request.body?.initData);
+    fastify.post('/api/admin/groups', async (request, reply) => {
+      const parsed = InitDataBody.safeParse(request.body);
+      if (!parsed.success) return reply.code(400).send({ error: 'Invalid request', details: parsed.error.issues });
+
+      const userId = this.validateInitData(parsed.data.initData);
       if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
 
       const groups = await this.groupService.getAdminGroups(userId, this.bot.getBot().api);
@@ -45,11 +125,14 @@ export class MiniAppController {
     });
 
     // ── Settings: get ──
-    fastify.post<{ Body: { initData: string; groupId: string } }>('/api/admin/settings', async (request, reply) => {
-      const userId = this.validateInitData(request.body?.initData);
+    fastify.post('/api/admin/settings', async (request, reply) => {
+      const parsed = GroupBody.safeParse(request.body);
+      if (!parsed.success) return reply.code(400).send({ error: 'Invalid request', details: parsed.error.issues });
+
+      const userId = this.validateInitData(parsed.data.initData);
       if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
 
-      const { groupId } = request.body;
+      const { groupId } = parsed.data;
       const isAdmin = await this.groupService.isAdminCached(Number(groupId), Number(userId), this.bot.getBot().api);
       if (!isAdmin) return reply.code(403).send({ error: 'Not admin of this group' });
 
@@ -69,11 +152,14 @@ export class MiniAppController {
     });
 
     // ── Settings: update ──
-    fastify.post<{ Body: { initData: string; groupId: string; updates: any } }>('/api/admin/settings/update', async (request, reply) => {
-      const userId = this.validateInitData(request.body?.initData);
+    fastify.post('/api/admin/settings/update', async (request, reply) => {
+      const parsed = UpdateSettingsBody.safeParse(request.body);
+      if (!parsed.success) return reply.code(400).send({ error: 'Invalid request', details: parsed.error.issues });
+
+      const userId = this.validateInitData(parsed.data.initData);
       if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
 
-      const { groupId, updates } = request.body;
+      const { groupId, updates } = parsed.data;
       const isAdmin = await this.groupService.isAdminCached(Number(groupId), Number(userId), this.bot.getBot().api);
       if (!isAdmin) return reply.code(403).send({ error: 'Not admin of this group' });
 
@@ -121,11 +207,14 @@ export class MiniAppController {
     });
 
     // ── Lottery: list active ──
-    fastify.post<{ Body: { initData: string; groupId: string } }>('/api/admin/lottery/list', async (request, reply) => {
-      const userId = this.validateInitData(request.body?.initData);
+    fastify.post('/api/admin/lottery/list', async (request, reply) => {
+      const parsed = GroupBody.safeParse(request.body);
+      if (!parsed.success) return reply.code(400).send({ error: 'Invalid request', details: parsed.error.issues });
+
+      const userId = this.validateInitData(parsed.data.initData);
       if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
 
-      const { groupId } = request.body;
+      const { groupId } = parsed.data;
       const isAdmin = await this.groupService.isAdminCached(Number(groupId), Number(userId), this.bot.getBot().api);
       if (!isAdmin) return reply.code(403).send({ error: 'Forbidden' });
 
@@ -145,21 +234,14 @@ export class MiniAppController {
     });
 
     // ── Lottery: create ──
-    fastify.post<{
-      Body: {
-        initData: string;
-        groupId: string;
-        prize: string;
-        winnerCount: number;
-        durationMinutes: number;
-        minLevel: number;
-        costCoins: number;
-      };
-    }>('/api/admin/lottery/create', async (request, reply) => {
-      const userId = this.validateInitData(request.body?.initData);
+    fastify.post('/api/admin/lottery/create', async (request, reply) => {
+      const parsed = CreateLotteryBody.safeParse(request.body);
+      if (!parsed.success) return reply.code(400).send({ error: 'Invalid request', details: parsed.error.issues });
+
+      const userId = this.validateInitData(parsed.data.initData);
       if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
 
-      const { groupId, prize, winnerCount, durationMinutes, minLevel, costCoins } = request.body;
+      const { groupId, prize, winnerCount, durationMinutes, minLevel, costCoins } = parsed.data;
       const isAdmin = await this.groupService.isAdminCached(Number(groupId), Number(userId), this.bot.getBot().api);
       if (!isAdmin) return reply.code(403).send({ error: 'Forbidden' });
 
@@ -195,11 +277,14 @@ export class MiniAppController {
     });
 
     // ── Lottery: draw ──
-    fastify.post<{ Body: { initData: string; lotteryId: number } }>('/api/admin/lottery/draw', async (request, reply) => {
-      const userId = this.validateInitData(request.body?.initData);
+    fastify.post('/api/admin/lottery/draw', async (request, reply) => {
+      const parsed = LotteryActionBody.safeParse(request.body);
+      if (!parsed.success) return reply.code(400).send({ error: 'Invalid request', details: parsed.error.issues });
+
+      const userId = this.validateInitData(parsed.data.initData);
       if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
 
-      const { lotteryId } = request.body;
+      const { lotteryId } = parsed.data;
       const lottery = await this.levelService.getLottery(Number(lotteryId));
       if (!lottery) return reply.code(404).send({ error: '抽奖不存在' });
 
@@ -232,11 +317,14 @@ export class MiniAppController {
     });
 
     // ── Lottery: cancel ──
-    fastify.post<{ Body: { initData: string; lotteryId: number } }>('/api/admin/lottery/cancel', async (request, reply) => {
-      const userId = this.validateInitData(request.body?.initData);
+    fastify.post('/api/admin/lottery/cancel', async (request, reply) => {
+      const parsed = LotteryActionBody.safeParse(request.body);
+      if (!parsed.success) return reply.code(400).send({ error: 'Invalid request', details: parsed.error.issues });
+
+      const userId = this.validateInitData(parsed.data.initData);
       if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
 
-      const { lotteryId } = request.body;
+      const { lotteryId } = parsed.data;
       const lottery = await this.levelService.getLottery(Number(lotteryId));
       if (!lottery) return reply.code(404).send({ error: '抽奖不存在' });
 
@@ -255,6 +343,218 @@ export class MiniAppController {
       await this.levelService.saveLottery(lottery);
 
       return reply.send({ success: true });
+    });
+    // ── Verification: get session info ──
+    fastify.post('/api/miniapp/verify/session', async (request, reply) => {
+      const parsed = z.object({
+        initData: z.string().min(1),
+        sessionId: z.string().min(1),
+      }).safeParse(request.body);
+      if (!parsed.success) return reply.code(400).send({ error: 'Invalid request' });
+
+      const userId = this.validateInitData(parsed.data.initData);
+      if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+
+      const session = await this.verificationService.getSession(parsed.data.sessionId);
+      if (!session) {
+        return reply.code(404).send({ error: 'session_not_found', message: '验证会话不存在' });
+      }
+
+      if (session.userId !== userId) {
+        return reply.code(403).send({ error: 'wrong_user', message: '此验证链接不属于您' });
+      }
+
+      if (session.status !== 'pending') {
+        return reply.code(400).send({ error: 'session_completed', message: '验证会话已完成或已过期' });
+      }
+
+      if (new Date() > session.expiresAt) {
+        return reply.code(400).send({ error: 'session_expired', message: '验证已过期，请返回群组重新获取' });
+      }
+
+      const user = await this.userService.findById(userId);
+      const group = await this.groupService.findById(session.groupId);
+
+      const remainingMs = session.expiresAt.getTime() - Date.now();
+      const remainingSeconds = Math.ceil(remainingMs / 1000);
+
+      return reply.send({
+        groupName: group?.title || '群组',
+        userFirstName: user?.firstName || '',
+        userLastName: user?.lastName || '',
+        username: user?.username || '',
+        ttlSeconds: remainingSeconds,
+        siteKey: this.turnstileService.getSiteKey(),
+      });
+    });
+
+    // ── Verification: submit ──
+    fastify.post('/api/miniapp/verify', async (request, reply) => {
+      const parsed = z.object({
+        initData: z.string().min(1),
+        sessionId: z.string().min(1),
+        turnstileToken: z.string().min(1),
+      }).safeParse(request.body);
+      if (!parsed.success) return reply.code(400).send({ error: 'Invalid request' });
+
+      const userId = this.validateInitData(parsed.data.initData);
+      if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+
+      const remoteIp = request.ip;
+      const { sessionId, turnstileToken } = parsed.data;
+
+      this.logger.info('Mini App verification request', { userId, sessionId, ip: remoteIp });
+
+      const session = await this.verificationService.getSession(sessionId);
+      if (!session || session.status !== 'pending') {
+        return reply.code(400).send({ success: false, message: '验证会话不存在或已完成' });
+      }
+
+      if (session.userId !== userId) {
+        return reply.code(403).send({ success: false, message: '此验证链接不属于您' });
+      }
+
+      // Check attempts
+      if (session.attemptCount >= 5) {
+        await this.auditService.log({
+          groupId: session.groupId,
+          userId: session.userId,
+          action: 'user_failed_verification',
+          details: 'Too many attempts (Mini App)',
+          ip: remoteIp,
+        });
+        return reply.code(429).send({ success: false, message: '尝试次数过多，请稍后再试' });
+      }
+
+      // Increment attempts
+      await this.verificationService.incrementAttempts(session.id);
+
+      // Verify Turnstile
+      const turnstileResult = await this.turnstileService.verify(turnstileToken, remoteIp);
+      if (!turnstileResult.success) {
+        this.logger.warn('Mini App Turnstile verification failed', {
+          userId, sessionId,
+          errors: turnstileResult['error-codes'],
+        });
+        return reply.code(400).send({ success: false, message: '人机验证失败，请重试' });
+      }
+
+      // Mark session as verified
+      const verified = await this.verificationService.verifySession(
+        session.id, remoteIp, request.headers['user-agent'],
+      );
+      if (!verified) {
+        return reply.code(400).send({ success: false, message: '验证失败，请重试' });
+      }
+
+      // Remove restrictions from user
+      const chatId = Number(session.groupId);
+      const numericUserId = Number(session.userId);
+
+      try {
+        await unrestrictUser(this.bot.getBot(), chatId, numericUserId);
+        this.logger.info('User verified via Mini App and unrestricted', { userId, groupId: session.groupId });
+      } catch (error) {
+        this.logger.error('Failed to unrestrict user', error);
+      }
+
+      // Log verification
+      await this.auditService.log({
+        groupId: session.groupId,
+        userId: session.userId,
+        action: 'user_verified',
+        details: 'Verification completed via Mini App',
+        ip: remoteIp,
+      });
+
+      // Send success notification to group (auto-deletes after 30s)
+      const group = await this.groupService.findById(session.groupId);
+      const groupName = group?.title || '群组';
+      try {
+        const user = await this.userService.findById(session.userId);
+        const userMention = formatUserMention(user, session.userId);
+        await sendTemporaryMessage(
+          this.bot.getBot(), chatId,
+          `✅ ${userMention} 已成功通过验证，欢迎加入群组！`,
+          { parse_mode: 'Markdown' },
+        );
+      } catch (error) {
+        this.logger.error('Failed to send group notification', error);
+      }
+
+      // Delete welcome message from group
+      if (session.messageId) {
+        try {
+          await this.bot.getBot().api.deleteMessage(chatId, session.messageId);
+        } catch (error) {
+          this.logger.debug('Could not delete welcome message');
+        }
+      }
+
+      return reply.send({ success: true, message: '验证成功！', groupName });
+    });
+
+    // ── Leaderboard ──
+    fastify.post('/api/miniapp/leaderboard', async (request, reply) => {
+      const parsed = z.object({
+        initData: z.string().min(1),
+        groupId: z.string().min(1),
+      }).safeParse(request.body);
+      if (!parsed.success) return reply.code(400).send({ error: 'Invalid request' });
+
+      const userId = this.validateInitData(parsed.data.initData);
+      if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+
+      const { groupId } = parsed.data;
+
+      // Ensure the group exists
+      const group = await this.groupService.findById(groupId);
+      if (!group) return reply.code(404).send({ error: 'Group not found' });
+
+      const settings = await this.groupService.getSettings(groupId);
+      const customTitles = settings?.customSettings?.customTitles || null;
+
+      // Fetch Top 30 for both XP and Coins
+      const topXpProfiles = await this.levelService.getLeaderboard(groupId, 30);
+      const topCoinsProfiles = await this.levelService.getCoinsLeaderboard(groupId, 30);
+
+      // Helper to map profiles to user infos
+      const mapProfile = async (p: any) => {
+        const user = await this.userService.findById(p.userId);
+        const name = user?.firstName || user?.username || p.userId;
+        return {
+          userId: p.userId,
+          name,
+          username: user?.username,
+          avatarChar: name.charAt(0).toUpperCase(),
+          level: p.level,
+          xp: p.xp,
+          coins: p.coins,
+          title: LevelService.getTitle(p.level, customTitles),
+        };
+      };
+
+      const xpList = await Promise.all(topXpProfiles.map(mapProfile));
+      const coinsList = await Promise.all(topCoinsProfiles.map(mapProfile));
+
+      // Current user's info
+      const myProfile = await this.levelService.getOrCreateProfile(userId, groupId);
+      const myXpRank = await this.levelService.getRank(userId, groupId);
+      const myCoinsRank = await this.levelService.getCoinsRank(userId, groupId);
+
+      return reply.send({
+        groupName: group.title,
+        xpList,
+        coinsList,
+        myStats: {
+          level: myProfile.level,
+          xp: myProfile.xp,
+          coins: myProfile.coins,
+          xpRank: myXpRank,
+          coinsRank: myCoinsRank,
+          title: LevelService.getTitle(myProfile.level, customTitles)
+        }
+      });
     });
   }
 

@@ -2,6 +2,7 @@ import { CommandContext } from 'grammy';
 import { BaseCommand } from './BaseCommand';
 import { MyContext } from '../services/TelegramBot';
 import { LevelService } from '../services/LevelService';
+import { sendTemporaryMessage } from '../utils/telegram';
 
 export class CheckinCommand extends BaseCommand {
   command = 'checkin';
@@ -24,13 +25,23 @@ export class CheckinCommand extends BaseCommand {
     const userId = ctx.from!.id.toString();
     const groupId = ctx.chat!.id.toString();
 
+    // Auto-delete the invoking message to prevent chat clutter
+    try {
+      await ctx.deleteMessage();
+    } catch (e) {
+      // Ignore if no permission to delete
+    }
+
     const result = await this.levelService.checkin(userId, groupId);
 
     if (!result.success) {
       if (result.alreadyChecked) {
-        await ctx.reply(
+        await sendTemporaryMessage(
+          this.bot,
+          ctx.chat!.id,
           `📅 您今天已经签到过了！\n\n🔥 连续签到: ${result.streak} 天\n💰 当前积分: ${result.totalCoins}`,
-          { parse_mode: 'Markdown' }
+          { parse_mode: 'Markdown' },
+          30000
         );
       }
       return;
@@ -50,10 +61,15 @@ export class CheckinCommand extends BaseCommand {
     // Streak milestone tips
     if (result.streak === 6) {
       text += `\n\n💡 明天连续签到第7天可获得 *50积分* 奖励！`;
-    } else if (result.streak === 29) {
       text += `\n\n💡 明天连续签到第30天可获得 *200积分* 奖励！`;
     }
 
-    await ctx.reply(text, { parse_mode: 'Markdown' });
+    await sendTemporaryMessage(
+      this.bot,
+      ctx.chat!.id,
+      text,
+      { parse_mode: 'Markdown' },
+      30000
+    );
   }
 }

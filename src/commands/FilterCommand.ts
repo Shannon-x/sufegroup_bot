@@ -186,7 +186,16 @@ export class FilterCommand extends BaseCommand {
       return;
     }
 
-    (config as any)[key] = value === 'on';
+    const boolFields: Record<string, boolean> = {
+      blockUrls: config.blockUrls,
+      blockInviteLinks: config.blockInviteLinks,
+      blockPhoneNumbers: config.blockPhoneNumbers,
+      blockForwards: config.blockForwards,
+    };
+    if (key in boolFields) {
+      boolFields[key] = value === 'on';
+      Object.assign(config, { [key]: boolFields[key] });
+    }
     await this.saveFilterConfig(groupId, settings, config);
     await ctx.reply(`✅ 已${value === 'on' ? '开启' : '关闭'}`);
   }

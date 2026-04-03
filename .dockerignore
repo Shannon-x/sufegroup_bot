@@ -1,0 +1,15 @@
+node_modules
+dist
+logs
+.git
+.github
+.env
+.env.*
+!.env.example
+*.md
+.eslintrc.js
+.vscode
+.idea
+nginx
+scripts
+docker-compose*.yml

@@ -2,6 +2,9 @@ import { CommandContext } from 'grammy';
 import { BaseCommand } from './BaseCommand';
 import { MyContext } from '../services/TelegramBot';
 import { LevelService } from '../services/LevelService';
+import { config } from '../config/config';
+import { InlineKeyboard } from 'grammy';
+import { sendTemporaryMessage } from '../utils/telegram';
 
 export class RankCommand extends BaseCommand {
   command = 'rank';
@@ -22,34 +25,30 @@ export class RankCommand extends BaseCommand {
     if (!await this.requireGroup(ctx)) return;
 
     const groupId = ctx.chat!.id.toString();
-    const top = await this.levelService.getLeaderboard(groupId, 10);
+    const cleanGroupId = groupId.replace('-', 'm');
 
-    if (top.length === 0) {
-      await ctx.reply('暂无排行数据，大家多聊天多签到吧！');
-      return;
+    const botUsername = config.bot.username || 'bot';
+    const keyboard = new InlineKeyboard();
+
+    if (config.bot.miniAppShortName && config.bot.webhookDomain) {
+      const miniAppUrl = `https://t.me/${botUsername}/${config.bot.miniAppShortName}?startapp=rank_${cleanGroupId}`;
+      keyboard.url('🏆 查看实时排行榜', miniAppUrl);
+    } else if (config.bot.webhookDomain) {
+      const fallbackUrl = `${config.bot.webhookDomain}/mini-app?startapp=rank_${cleanGroupId}`;
+      keyboard.webApp('🏆 查看实时排行榜', fallbackUrl);
     }
 
-    const settings = await this.groupService.getSettings(groupId);
-    const customTitles = settings?.customSettings?.customTitles || null;
+    // Auto-delete the invoking message if possible
+    try {
+      await ctx.deleteMessage();
+    } catch (e) {}
 
-    const medals = ['🥇', '🥈', '🥉'];
-    const lines = await Promise.all(
-      top.map(async (p, i) => {
-        const prefix = i < 3 ? medals[i] : `${i + 1}.`;
-        const title = LevelService.getTitle(p.level, customTitles);
-        const user = await this.userService.findById(p.userId);
-        const name = user?.firstName || user?.username || p.userId;
-        return `${prefix} *${name}*  Lv.${p.level} ${title}\n    XP: ${p.xp}  💬${p.totalMessages}  💰${p.coins}`;
-      })
+    await sendTemporaryMessage(
+      this.bot,
+      ctx.chat!.id,
+      `🏆 *群组积分与活跃榜单*\n\n点击下方按钮，进入专属的群组数据大盘与排行榜单，查看您的实时排行！`,
+      { reply_markup: keyboard, parse_mode: 'Markdown' },
+      60000 // 保持 60 秒
     );
-
-    // Show caller's rank
-    const myRank = await this.levelService.getRank(ctx.from!.id.toString(), groupId);
-    let footer = '';
-    if (myRank > 10) {
-      footer = `\n\n── 您的排名: #${myRank}`;
-    }
-
-    await ctx.reply(`🏆 *活跃排行榜*\n\n${lines.join('\n\n')}${footer}`, { parse_mode: 'Markdown' });
   }
 }

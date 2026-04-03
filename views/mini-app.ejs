@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>小菲 · 管理面板</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
 <style>
 /* ── Design tokens: dark (default) ── */
 :root {
@@ -318,6 +319,162 @@ html[data-theme="light"] #toast { background: #1c1c1e; }
 
 /* ── Err message ── */
 #err-msg { color: var(--text2); font-size: 14px; line-height: 1.7; white-space: pre-wrap; }
+
+/* ── Verification screen ── */
+#screen-verify { display: none; min-height: 100vh; padding: 20px 16px; }
+
+.verify-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r); overflow: hidden; margin-top: 8px;
+}
+.verify-header {
+  padding: 20px 18px 16px; text-align: center;
+  border-bottom: 1px solid var(--border);
+}
+.verify-icon { font-size: 40px; margin-bottom: 8px; }
+.verify-title {
+  font-size: 20px; font-weight: 700; color: var(--text); margin-bottom: 4px;
+}
+.verify-sub { font-size: 13.5px; color: var(--text2); }
+.verify-group-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 12px; border-radius: 16px;
+  background: var(--accent-soft); border: 1px solid rgba(99,102,241,.25);
+  font-size: 12.5px; color: var(--accent); margin-top: 10px;
+}
+.verify-group-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .4; }
+}
+
+/* User info row */
+.verify-user {
+  display: flex; align-items: center; gap: 12px;
+  padding: 16px 18px; border-bottom: 1px solid var(--border);
+}
+.verify-avatar {
+  width: 44px; height: 44px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent) 0%, #818cf8 100%);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px; font-weight: 700; color: #fff; flex-shrink: 0;
+}
+.verify-uname { font-size: 15px; font-weight: 600; color: var(--text); }
+.verify-handle { font-size: 12.5px; color: var(--text3); margin-top: 2px; }
+
+/* Timer */
+.verify-timer {
+  padding: 14px 18px; border-bottom: 1px solid var(--border);
+}
+.verify-timer-row {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px;
+}
+.verify-timer-label { font-size: 13px; color: var(--text2); }
+.verify-timer-value {
+  font-size: 16px; font-weight: 700; color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.verify-timer-value.urgent { color: var(--error); }
+.verify-bar {
+  height: 4px; border-radius: 2px;
+  background: var(--inp-bg); overflow: hidden;
+}
+.verify-bar-fill {
+  height: 100%; border-radius: 2px;
+  background: var(--accent); transition: width 1s linear;
+}
+.verify-bar-fill.urgent { background: var(--error); }
+
+/* Captcha section */
+.verify-captcha { padding: 18px; text-align: center; }
+.verify-captcha-wrap {
+  display: inline-flex; justify-content: center;
+  margin-bottom: 16px; min-height: 65px;
+}
+.verify-btn {
+  display: block; width: 100%; padding: 13px;
+  border-radius: var(--r-sm);
+  background: var(--accent); border: none; color: #fff;
+  font-size: 15px; font-weight: 600; cursor: pointer;
+  transition: opacity .15s, transform .1s;
+}
+.verify-btn:disabled { opacity: .45; cursor: not-allowed; }
+.verify-btn:active:not(:disabled) { transform: scale(.98); }
+.verify-btn.loading {
+  pointer-events: none; opacity: .6;
+}
+
+/* Verification messages */
+.verify-msg {
+  margin-top: 12px; padding: 10px 14px; border-radius: var(--r-sm);
+  font-size: 13px; font-weight: 500;
+  display: none;
+}
+.verify-msg.error {
+  background: var(--error-soft); color: var(--error);
+  border: 1px solid rgba(255,69,58,.2);
+}
+.verify-msg.success {
+  background: var(--success-soft); color: var(--success);
+  border: 1px solid rgba(48,209,88,.2);
+}
+
+/* Success overlay */
+.verify-success-overlay {
+  display: none; flex-direction: column; align-items: center;
+  justify-content: center; min-height: 100vh;
+  padding: 32px; text-align: center;
+}
+.verify-check {
+  width: 72px; height: 72px; border-radius: 50%;
+  background: var(--success-soft); border: 2px solid var(--success);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 36px; margin-bottom: 16px;
+  animation: pop .4s cubic-bezier(.175,.885,.32,1.275);
+}
+@keyframes pop {
+  0% { transform: scale(0); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
+.verify-done-title {
+  font-size: 20px; font-weight: 700; color: var(--text); margin-bottom: 6px;
+}
+.verify-done-sub {
+  font-size: 14px; color: var(--text2); line-height: 1.6;
+}
+.verify-done-close {
+  margin-top: 20px; padding: 10px 28px; border-radius: 20px;
+  background: var(--accent); border: none; color: #fff;
+  font-size: 14px; font-weight: 600; cursor: pointer;
+}
+/* ── Leaderboard screen ── */
+#screen-leaderboard { display: none; min-height: 100vh; padding: 20px 16px; padding-bottom: 40px; }
+.lb-header { text-align: center; margin-bottom: 20px; }
+.lb-title { font-size: 22px; font-weight: 700; color: var(--text); }
+.lb-sub { font-size: 13px; color: var(--text2); margin-top: 4px; }
+.lb-tabs { display: flex; background: var(--surface); border-radius: var(--r-sm); padding: 4px; margin-bottom: 16px; border: 1px solid var(--border); }
+.lb-tab { flex: 1; text-align: center; padding: 8px 0; font-size: 14px; font-weight: 600; color: var(--text2); border-radius: var(--r-sm); cursor: pointer; transition: all .2s; }
+.lb-tab.active { background: var(--bg); color: var(--accent); box-shadow: 0 1px 3px rgba(0,0,0,.05); }
+.lb-list { display: flex; flex-direction: column; gap: 8px; }
+.lb-item { display: flex; align-items: center; background: var(--surface); padding: 12px 14px; border-radius: var(--r-sm); border: 1px solid var(--border); gap: 12px; }
+.lb-item.me { border-color: var(--accent); background: var(--accent-light); }
+.lb-rank { width: 28px; font-size: 15px; font-weight: 700; color: var(--text3); text-align: center; }
+.lb-rank.top1 { color: #F59E0B; font-size: 18px; }
+.lb-rank.top2 { color: #9CA3AF; font-size: 18px; }
+.lb-rank.top3 { color: #D97706; font-size: 18px; }
+.lb-avatar { width: 40px; height: 40px; border-radius: 50%; background: linear-gradient(135deg, var(--accent) 0%, #818cf8 100%); display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 700; color: #fff; flex-shrink: 0; }
+.lb-info { flex: 1; min-width: 0; }
+.lb-name { font-size: 15px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lb-tag { font-size: 12px; color: var(--text2); margin-top: 2px; }
+.lb-score { font-size: 16px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; text-align: right; }
+.lb-score-lbl { font-size: 12px; color: var(--text3); display: block; font-weight: 500; margin-top: 2px; }
+.lb-faq { margin-top: 24px; padding: 16px; background: var(--surface); border-radius: var(--r-sm); border: 1px solid var(--border); }
+.lb-faq-title { font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+.lb-faq-text { font-size: 13px; color: var(--text2); line-height: 1.6; margin-bottom: 8px; }
 </style>
 </head>
 <body>
@@ -335,6 +492,83 @@ html[data-theme="light"] #toast { background: #1c1c1e; }
 <div id="screen-error">
   <div style="font-size:44px;margin-bottom:4px">⚠️</div>
   <p id="err-msg"></p>
+</div>
+
+<!-- Verification -->
+<div id="screen-verify">
+  <div class="verify-card">
+    <div class="verify-header">
+      <div class="verify-icon">🔐</div>
+      <div class="verify-title">入群验证</div>
+      <div class="verify-sub">请完成人机验证以加入群组</div>
+      <div class="verify-group-badge" id="v-group-badge">
+        <span class="verify-group-dot"></span>
+        <span id="v-group-name">加载中...</span>
+      </div>
+    </div>
+
+    <div class="verify-user" id="v-user-section" style="display:none;">
+      <div class="verify-avatar" id="v-avatar"></div>
+      <div>
+        <div class="verify-uname" id="v-uname"></div>
+        <div class="verify-handle" id="v-handle"></div>
+      </div>
+    </div>
+
+    <div class="verify-timer" id="v-timer-section" style="display:none;">
+      <div class="verify-timer-row">
+        <span class="verify-timer-label">⏱ 剩余时间</span>
+        <span class="verify-timer-value" id="v-timer">--:--</span>
+      </div>
+      <div class="verify-bar">
+        <div class="verify-bar-fill" id="v-bar" style="width:100%"></div>
+      </div>
+    </div>
+
+    <div class="verify-captcha" id="v-captcha">
+      <div class="verify-captcha-wrap" id="v-turnstile-container"></div>
+      <button class="verify-btn" id="v-submit" disabled>完成验证</button>
+      <div class="verify-msg error" id="v-error"></div>
+      <div class="verify-msg success" id="v-success"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Verification success overlay -->
+<div class="verify-success-overlay" id="screen-verify-done">
+  <div class="verify-check">✓</div>
+  <div class="verify-done-title">验证成功！</div>
+  <div class="verify-done-sub" id="v-done-sub">您已通过验证，现在可以正常发言了。</div>
+  <button class="verify-done-close" id="v-done-close">关闭</button>
+</div>
+
+<!-- Leaderboard -->
+<div id="screen-leaderboard">
+  <div class="lb-header">
+    <div class="lb-title">🏆 群组排名</div>
+    <div class="lb-sub" id="lb-group-name">加载中...</div>
+  </div>
+
+  <div class="lb-tabs">
+    <div class="lb-tab active" id="lb-btn-xp">🌟 活跃榜 (经验)</div>
+    <div class="lb-tab" id="lb-btn-coins">💰 财富榜 (积分)</div>
+  </div>
+
+  <div id="lb-my-score" style="margin-bottom: 12px;"></div>
+
+  <div class="lb-list" id="lb-list-container">
+    <!-- Items populated by JS -->
+  </div>
+
+  <div class="lb-faq">
+    <div class="lb-faq-title">💡 积分与经验有什么区别？</div>
+    <div class="lb-faq-text">
+      <b>🌟 经验 (XP)</b>：代表您的群活度，通过每日群内聊天和签到自动获取。经验值决定了您的<b>等级与称号</b>，仅作群地位展示，无法消费或减少。
+    </div>
+    <div class="lb-faq-text">
+      <b>💰 积分 (Coins)</b>：代表您的虚拟财富，主要通过完成每日签到获取。积分可以被<b>作为货币消耗</b>，例如用于参与需要费用的抽奖活动等。
+    </div>
+  </div>
 </div>
 
 <!-- Group list -->
@@ -613,10 +847,12 @@ function setTog(id, val) {
    Screens
 ════════════════════════════════════════════ */
 function show(id) {
-  var ids = ['screen-loading','screen-error','screen-groups','screen-panel'];
+  var ids = ['screen-loading','screen-error','screen-groups','screen-panel','screen-verify','screen-verify-done', 'screen-leaderboard'];
   ids.forEach(function(sid){
     var el = document.getElementById(sid);
     if (sid === 'screen-panel')
+      el.style.display = sid === id ? 'flex' : 'none';
+    else if (sid === 'screen-verify-done')
       el.style.display = sid === id ? 'flex' : 'none';
     else
       el.style.display = sid === id ? 'block' : 'none';
@@ -1148,13 +1384,317 @@ document.addEventListener('DOMContentLoaded', function(){
   }, true);
 
   // Start
+  // Start: check if this is a verification flow or admin panel
+  var startParam = '';
+  try { startParam = tg.initDataUnsafe && tg.initDataUnsafe.start_param ? tg.initDataUnsafe.start_param : ''; } catch(e) {}
+  // Also check URL query parameter for testing
+  if (!startParam) {
+    try {
+      var sp = new URLSearchParams(window.location.search);
+      startParam = sp.get('startapp') || '';
+    } catch(e) {}
+  }
+
   if (!window.Telegram || !window.Telegram.WebApp) {
     show('screen-error');
     document.getElementById('err-msg').textContent = '请在 Telegram 客户端内打开此页面';
+  } else if (startParam && startParam.indexOf('verify_') === 0) {
+    // Verification mode
+    initVerification(startParam.substring(7));
+  } else if (startParam && startParam.indexOf('rank_') === 0) {
+    // Leaderboard mode
+    initLeaderboard(startParam.substring(5));
   } else {
     loadGroups();
   }
 });
+
+/* ════════════════════════════════════════════
+   🔐 Verification Mode
+════════════════════════════════════════════ */
+var SITE_KEY = '<%= siteKey %>';
+var _vTimer = null;
+var _vTurnstileToken = null;
+var _vSessionId = null;
+var _vTotalSeconds = 0;
+var _vRemaining = 0;
+
+async function initVerification(sessionId) {
+  _vSessionId = sessionId;
+  show('screen-loading');
+
+  if (!initData) {
+    show('screen-error');
+    document.getElementById('err-msg').textContent = '请通过群组中的验证按钮打开此页面。';
+    return;
+  }
+
+  try {
+    var res = await fetch('/api/miniapp/verify/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: initData, sessionId: sessionId })
+    });
+    var data = await res.json();
+
+    if (!res.ok) {
+      show('screen-error');
+      document.getElementById('err-msg').textContent = data.message || '验证会话无效';
+      return;
+    }
+
+    // Populate UI
+    document.getElementById('v-group-name').textContent = data.groupName;
+    var fullName = data.userFirstName + (data.userLastName ? ' ' + data.userLastName : '');
+    document.getElementById('v-avatar').textContent = (data.userFirstName || '?').charAt(0).toUpperCase();
+    document.getElementById('v-uname').textContent = fullName;
+    document.getElementById('v-handle').textContent = data.username ? '@' + data.username : '';
+    document.getElementById('v-user-section').style.display = 'flex';
+    document.getElementById('v-timer-section').style.display = 'block';
+
+    // Timer
+    _vTotalSeconds = data.ttlSeconds;
+    _vRemaining = data.ttlSeconds;
+    updateVerifyTimer();
+    _vTimer = setInterval(function() {
+      _vRemaining--;
+      if (_vRemaining <= 0) {
+        clearInterval(_vTimer);
+        show('screen-error');
+        document.getElementById('err-msg').textContent = '验证已超时，请返回群组重新获取验证链接。';
+        return;
+      }
+      updateVerifyTimer();
+    }, 1000);
+
+    // Render Turnstile
+    if (window.turnstile) {
+      renderTurnstile();
+    } else {
+      // Wait for Turnstile script to load
+      var tw = setInterval(function() {
+        if (window.turnstile) {
+          clearInterval(tw);
+          renderTurnstile();
+        }
+      }, 200);
+    }
+
+    show('screen-verify');
+
+  } catch (e) {
+    show('screen-error');
+    document.getElementById('err-msg').textContent = '网络错误，请重试。\n' + e.message;
+  }
+}
+
+function renderTurnstile() {
+  var container = document.getElementById('v-turnstile-container');
+  container.innerHTML = '';
+  window.turnstile.render(container, {
+    sitekey: SITE_KEY,
+    theme: _theme,
+    callback: function(token) {
+      _vTurnstileToken = token;
+      document.getElementById('v-submit').disabled = false;
+    },
+    'error-callback': function() {
+      showVerifyMsg('error', '人机验证组件加载失败，请刷新重试');
+    }
+  });
+}
+
+function updateVerifyTimer() {
+  var m = Math.floor(_vRemaining / 60);
+  var s = _vRemaining % 60;
+  var timerEl = document.getElementById('v-timer');
+  var barEl = document.getElementById('v-bar');
+  timerEl.textContent = m + ':' + (s < 10 ? '0' : '') + s;
+  var pct = (_vRemaining / _vTotalSeconds) * 100;
+  barEl.style.width = pct + '%';
+  if (_vRemaining <= 120) {
+    timerEl.classList.add('urgent');
+    barEl.classList.add('urgent');
+  } else {
+    timerEl.classList.remove('urgent');
+    barEl.classList.remove('urgent');
+  }
+}
+
+async function submitVerification() {
+  if (!_vTurnstileToken) {
+    showVerifyMsg('error', '请先完成人机验证');
+    return;
+  }
+
+  var btn = document.getElementById('v-submit');
+  btn.disabled = true;
+  btn.classList.add('loading');
+  btn.textContent = '验证中…';
+  hideVerifyMsg();
+
+  try {
+    var res = await fetch('/api/miniapp/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        initData: initData,
+        sessionId: _vSessionId,
+        turnstileToken: _vTurnstileToken
+      })
+    });
+    var data = await res.json();
+
+    if (data.success) {
+      clearInterval(_vTimer);
+      document.getElementById('v-done-sub').textContent =
+        '您已通过 ' + (data.groupName || '群组') + ' 的验证，现在可以正常发言了。';
+      show('screen-verify-done');
+      // Auto close after 3 seconds
+      setTimeout(function() {
+        if (tg.close) tg.close();
+      }, 3000);
+    } else {
+      showVerifyMsg('error', data.message || '验证失败，请重试');
+      btn.disabled = false;
+      btn.classList.remove('loading');
+      btn.textContent = '完成验证';
+      // Reset Turnstile for retry
+      _vTurnstileToken = null;
+      if (window.turnstile) {
+        renderTurnstile();
+      }
+    }
+  } catch (e) {
+    showVerifyMsg('error', '网络错误，请重试');
+    btn.disabled = false;
+    btn.classList.remove('loading');
+    btn.textContent = '完成验证';
+  }
+}
+
+function showVerifyMsg(type, text) {
+  hideVerifyMsg();
+  var el = document.getElementById(type === 'error' ? 'v-error' : 'v-success');
+  el.textContent = text;
+  el.style.display = 'block';
+}
+function hideVerifyMsg() {
+  document.getElementById('v-error').style.display = 'none';
+  document.getElementById('v-success').style.display = 'none';
+}
+
+// Verification button event
+document.getElementById('v-submit').addEventListener('click', submitVerification);
+document.getElementById('v-done-close').addEventListener('click', function() {
+  if (tg.close) tg.close();
+});
+
+/* ════════════════════════════════════════════
+   🏆 Leaderboard Mode
+════════════════════════════════════════════ */
+var _lbData = null;
+var _lbMode = 'xp'; // 'xp' or 'coins'
+
+async function initLeaderboard(groupIdParams) {
+  // groupIdParams uses "m" for negative values to bypass startapp limitation
+  var groupId = groupIdParams.replace(/m/g, '-');
+  show('screen-loading');
+
+  if (!initData) {
+    show('screen-error');
+    document.getElementById('err-msg').textContent = '验证失败：请确保您从 Telegram 内置浏览器打开。';
+    return;
+  }
+
+  try {
+    var res = await fetch('/api/miniapp/leaderboard', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: initData, groupId: groupId })
+    });
+    var data = await res.json();
+
+    if (!res.ok) {
+      show('screen-error');
+      document.getElementById('err-msg').textContent = data.error || '无法加载排行数据。您可能不在该群组内。';
+      return;
+    }
+
+    _lbData = data;
+    document.getElementById('lb-group-name').textContent = data.groupName;
+    renderLeaderboard();
+    show('screen-leaderboard');
+
+  } catch (e) {
+    show('screen-error');
+    document.getElementById('err-msg').textContent = '网络请求失败：' + e.message;
+  }
+}
+
+function renderLeaderboard() {
+  if (!_lbData) return;
+  var container = document.getElementById('lb-list-container');
+  container.innerHTML = '';
+  
+  // Tab UI update
+  document.getElementById('lb-btn-xp').className = 'lb-tab' + (_lbMode === 'xp' ? ' active' : '');
+  document.getElementById('lb-btn-coins').className = 'lb-tab' + (_lbMode === 'coins' ? ' active' : '');
+
+  // My Score Widget
+  var myStats = _lbData.myStats;
+  var myEl = document.getElementById('lb-my-score');
+  if (_lbMode === 'xp') {
+    myEl.innerHTML = '<div class="lb-item me"><div class="lb-rank">#'+myStats.xpRank+'</div><div class="lb-avatar">我</div><div class="lb-info"><div class="lb-name">您的数据</div><div class="lb-tag">Lv.'+myStats.level+' '+myStats.title+'</div></div><div class="lb-score">'+myStats.xp+'<span class="lb-score-lbl">XP</span></div></div>';
+  } else {
+    myEl.innerHTML = '<div class="lb-item me"><div class="lb-rank">#'+myStats.coinsRank+'</div><div class="lb-avatar">我</div><div class="lb-info"><div class="lb-name">您的财富</div><div class="lb-tag">积分资产</div></div><div class="lb-score">'+myStats.coins+'<span class="lb-score-lbl">Coins</span></div></div>';
+  }
+
+  // Generate list
+  var list = _lbMode === 'xp' ? _lbData.xpList : _lbData.coinsList;
+  if (!list || list.length === 0) {
+    container.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text3);font-size:14px;">暂无数据</div>';
+    return;
+  }
+
+  list.forEach(function(p, i) {
+    var rankStr = (i + 1).toString();
+    var rankClass = '';
+    if (i === 0) { rankStr = '🥇'; rankClass = ' top1'; }
+    else if (i === 1) { rankStr = '🥈'; rankClass = ' top2'; }
+    else if (i === 2) { rankStr = '🥉'; rankClass = ' top3'; }
+
+    var el = document.createElement('div');
+    el.className = 'lb-item';
+    
+    var scoreValue = _lbMode === 'xp' ? p.xp : p.coins;
+    var scoreLbl = _lbMode === 'xp' ? 'XP' : 'Coins';
+    
+    el.innerHTML = 
+      '<div class="lb-rank' + rankClass + '">' + rankStr + '</div>' +
+      '<div class="lb-avatar">' + p.avatarChar + '</div>' +
+      '<div class="lb-info">' +
+        '<div class="lb-name">' + esc(p.name) + '</div>' +
+        '<div class="lb-tag">Lv.' + p.level + ' ' + esc(p.title) + '</div>' +
+      '</div>' +
+      '<div class="lb-score">' + scoreValue + '<span class="lb-score-lbl">' + scoreLbl + '</span></div>';
+    
+    container.appendChild(el);
+  });
+}
+
+document.getElementById('lb-btn-xp').addEventListener('click', function() {
+  if (_lbMode === 'xp') return;
+  _lbMode = 'xp';
+  renderLeaderboard();
+});
+
+document.getElementById('lb-btn-coins').addEventListener('click', function() {
+  if (_lbMode === 'coins') return;
+  _lbMode = 'coins';
+  renderLeaderboard();
+});
+
 </script>
 </body>
 </html>

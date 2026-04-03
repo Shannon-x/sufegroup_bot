@@ -3,14 +3,17 @@ import { z } from 'zod';
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
-  PORT: z.string().transform(Number).default('3000'),
-  HOST: z.string().default('0.0.0.0'),
+  SERVER_PORT: z.string().transform(Number).optional(),
+  PORT: z.string().transform(Number).optional(),
+  SERVER_HOST: z.string().optional(),
+  HOST: z.string().optional(),
   
   // Telegram Bot
   BOT_TOKEN: z.string(),
   BOT_WEBHOOK_DOMAIN: z.string().optional(),
   BOT_WEBHOOK_SECRET: z.string().optional(),
   BOT_USERNAME: z.string().optional(),
+  BOT_MINIAPP_SHORT_NAME: z.string().optional(),
   
   // Database
   DB_HOST: z.string().default('localhost'),
@@ -30,7 +33,7 @@ const envSchema = z.object({
   
   // Security
   JWT_SECRET: z.string(),
-  HMAC_SECRET: z.string(),
+  HMAC_SECRET: z.string().optional(),
   
   // Bot Configuration
   DEFAULT_VERIFY_TTL_MINUTES: z.string().transform(Number).default('10'),
@@ -48,14 +51,15 @@ const env = envSchema.parse(process.env);
 export const config = {
   env: env.NODE_ENV,
   server: {
-    port: env.PORT,
-    host: env.HOST,
+    port: env.SERVER_PORT ?? env.PORT ?? 8080,
+    host: env.SERVER_HOST ?? env.HOST ?? '0.0.0.0',
   },
   bot: {
     token: env.BOT_TOKEN,
     webhookDomain: env.BOT_WEBHOOK_DOMAIN,
     webhookSecret: env.BOT_WEBHOOK_SECRET,
     username: env.BOT_USERNAME,
+    miniAppShortName: env.BOT_MINIAPP_SHORT_NAME,
   },
   db: {
     host: env.DB_HOST,
@@ -75,7 +79,7 @@ export const config = {
   },
   security: {
     jwtSecret: env.JWT_SECRET,
-    hmacSecret: env.HMAC_SECRET,
+    hmacSecret: env.HMAC_SECRET || env.JWT_SECRET,
   },
   defaults: {
     verifyTtlMinutes: env.DEFAULT_VERIFY_TTL_MINUTES,

@@ -187,8 +187,8 @@ export class AdminPanelCommand extends BaseCommand {
     if (action === 'ft_forward') { filterConfig.blockForwards = !filterConfig.blockForwards; await this.saveFilterConfig(groupId, settings, filterConfig); await ctx.answerCallbackQuery({ text: `频道转发过滤已${filterConfig.blockForwards ? '开启' : '关闭'}` }); await this.handleCallback(ctx, groupId, 'menu_filter'); return; }
 
     if (action === 'ft_action') {
-      const next: Record<string, string> = { warn: 'mute', mute: 'ban', ban: 'warn' };
-      filterConfig.action = next[filterConfig.action] as any;
+      const next: Record<string, 'warn' | 'mute' | 'ban'> = { warn: 'mute', mute: 'ban', ban: 'warn' };
+      filterConfig.action = next[filterConfig.action];
       await this.saveFilterConfig(groupId, settings, filterConfig);
       await ctx.answerCallbackQuery({ text: `处理方式: ${filterConfig.action}` });
       await this.handleCallback(ctx, groupId, 'menu_filter');
@@ -234,8 +234,8 @@ export class AdminPanelCommand extends BaseCommand {
     }
 
     if (action === 'flood_action') {
-      const next: Record<string, string> = { warn: 'mute', mute: 'ban', ban: 'warn' };
-      filterConfig.flood.action = next[filterConfig.flood.action] as any;
+      const next: Record<string, 'warn' | 'mute' | 'ban'> = { warn: 'mute', mute: 'ban', ban: 'warn' };
+      filterConfig.flood.action = next[filterConfig.flood.action];
       await this.saveFilterConfig(groupId, settings, filterConfig);
       await ctx.answerCallbackQuery({ text: `处理: ${filterConfig.flood.action}` });
       await this.handleCallback(ctx, groupId, 'menu_flood');

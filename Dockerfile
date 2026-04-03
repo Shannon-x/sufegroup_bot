@@ -50,7 +50,7 @@ RUN mkdir -p logs && \
 USER nodejs
 
 # Expose port
-EXPOSE 3000
+EXPOSE 8080
 
 # Use dumb-init to handle signals properly
 ENTRYPOINT ["dumb-init", "--"]

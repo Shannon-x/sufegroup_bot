@@ -1,4 +1,5 @@
 import { Bot } from 'grammy';
+import { ParseMode } from 'grammy/types';
 import { Logger } from './logger';
 
 const logger = new Logger('TelegramUtils');
@@ -10,10 +11,10 @@ export async function sendTemporaryMessage(
   bot: Bot<any>,
   chatId: number,
   text: string,
-  options?: { parse_mode?: string },
+  options?: any,
   deleteAfterMs: number = 30000
 ): Promise<number> {
-  const msg = await bot.api.sendMessage(chatId, text, options as any);
+  const msg = await bot.api.sendMessage(chatId, text, options);
 
   setTimeout(async () => {
     try {
