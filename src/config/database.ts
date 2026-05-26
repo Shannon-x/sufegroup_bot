@@ -9,6 +9,7 @@ import { Whitelist } from '../entities/Whitelist';
 import { Blacklist } from '../entities/Blacklist';
 import { UserGroupProfile } from '../entities/UserGroupProfile';
 import { Lottery } from '../entities/Lottery';
+import { ChatwootVerificationSession } from '../entities/ChatwootVerificationSession';
 
 export const AppDataSource = new DataSource({
   type: 'postgres',
@@ -19,7 +20,18 @@ export const AppDataSource = new DataSource({
   database: config.db.database,
   synchronize: false,
   logging: config.env === 'development',
-  entities: [User, Group, GroupSettings, JoinSession, AuditLog, Whitelist, Blacklist, UserGroupProfile, Lottery],
+  entities: [
+    User,
+    Group,
+    GroupSettings,
+    JoinSession,
+    AuditLog,
+    Whitelist,
+    Blacklist,
+    UserGroupProfile,
+    Lottery,
+    ChatwootVerificationSession,
+  ],
   migrations: ['dist/migrations/*.js'],
   subscribers: [],
 });

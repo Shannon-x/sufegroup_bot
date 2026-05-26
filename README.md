@@ -22,6 +22,7 @@
 | **Mini App** | Telegram 内嵌可视化管理面板全集成 |
 | **权限控制** | 每个 API 端点实时验证 Telegram 管理员身份 |
 | **审计日志** | 所有管理操作记录，90 天自动清理 |
+| **Chatwoot 网关** | 可选：拦截 Chatwoot Telegram inbox 私聊消息，未验证用户不进 Chatwoot（[部署说明](docs/CHATWOOT_TELEGRAM_GATEWAY_GUIDE.md)）|
 
 ---
 

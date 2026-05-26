@@ -14,6 +14,8 @@ import { Logger } from './utils/logger';
 import { TelegramBot } from './services/TelegramBot';
 import { VerificationController } from './controllers/VerificationController';
 import { MiniAppController } from './controllers/MiniAppController';
+import { ChatwootVerificationController } from './controllers/ChatwootVerificationController';
+import { ChatwootTelegramGatewayController } from './controllers/ChatwootTelegramGatewayController';
 import { SchedulerService } from './services/SchedulerService';
 import { RateLimitMiddleware } from './middleware/RateLimitMiddleware';
 import { TelegramIpWhitelist } from './middleware/TelegramIpWhitelist';
@@ -115,6 +117,12 @@ async function bootstrap() {
 
     const miniAppController = new MiniAppController(bot);
     await miniAppController.register(fastify);
+
+    const chatwootVerificationController = new ChatwootVerificationController();
+    await chatwootVerificationController.register(fastify);
+
+    const chatwootTelegramGatewayController = new ChatwootTelegramGatewayController();
+    await chatwootTelegramGatewayController.register(fastify);
 
     // Setup webhook endpoint if configured
     if (config.bot.webhookDomain) {

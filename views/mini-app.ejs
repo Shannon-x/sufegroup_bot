@@ -507,8 +507,8 @@ html[data-theme="dark"] .v-warn { color: #fde047; }
   <div class="verify-card">
     <div class="verify-header">
       <div class="verify-icon">🔐</div>
-      <div class="verify-title">入群验证</div>
-      <div class="verify-sub">请完成人机验证以加入群组</div>
+      <div class="verify-title" id="v-title">入群验证</div>
+      <div class="verify-sub" id="v-sub">请完成人机验证以加入群组</div>
       <div class="verify-group-badge" id="v-group-badge">
         <span class="verify-group-dot"></span>
         <span id="v-group-name">加载中...</span>
@@ -1421,7 +1421,10 @@ document.addEventListener('DOMContentLoaded', function(){
     document.getElementById('err-msg').textContent = '请在 Telegram 客户端内打开此页面';
   } else if (startParam && startParam.indexOf('verify_') === 0) {
     // Verification mode
-    initVerification(startParam.substring(7));
+    initVerification(startParam.substring(7), 'group');
+  } else if (startParam && startParam.indexOf('chatwoot_') === 0) {
+    // Chatwoot Telegram inbox verification mode
+    initVerification(startParam.substring(9), 'chatwoot');
   } else if (startParam && startParam.indexOf('rank_') === 0) {
     // Leaderboard mode
     initLeaderboard(startParam.substring(5));
@@ -1443,19 +1446,39 @@ var _hcWidgetId = null;
 var _vSessionId = null;
 var _vTotalSeconds = 0;
 var _vRemaining = 0;
+var _vMode = 'group';
 
-async function initVerification(sessionId) {
+function verificationEndpoints() {
+  if (_vMode === 'chatwoot') {
+    return {
+      session: '/api/miniapp/chatwoot/verify/session',
+      submit: '/api/miniapp/chatwoot/verify',
+      timeout: '验证已超时，请重新发送消息获取验证入口。'
+    };
+  }
+  return {
+    session: '/api/miniapp/verify/session',
+    submit: '/api/miniapp/verify',
+    timeout: '验证已超时，请返回群组重新获取验证链接。'
+  };
+}
+
+async function initVerification(sessionId, mode) {
   _vSessionId = sessionId;
+  _vMode = mode || 'group';
   show('screen-loading');
 
   if (!initData) {
     show('screen-error');
-    document.getElementById('err-msg').textContent = '请通过群组中的验证按钮打开此页面。';
+    document.getElementById('err-msg').textContent = _vMode === 'chatwoot'
+      ? '请通过 Telegram 客服聊天中的验证按钮打开此页面。'
+      : '请通过群组中的验证按钮打开此页面。';
     return;
   }
 
   try {
-    var res = await fetch('/api/miniapp/verify/session', {
+    var endpoints = verificationEndpoints();
+    var res = await fetch(endpoints.session, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ initData: initData, sessionId: sessionId })
@@ -1469,6 +1492,10 @@ async function initVerification(sessionId) {
     }
 
     // Populate UI
+    document.getElementById('v-title').textContent = _vMode === 'chatwoot' ? '客服消息验证' : '入群验证';
+    document.getElementById('v-sub').textContent = _vMode === 'chatwoot'
+      ? '请完成人机验证，验证通过后客服系统才会接收您的消息'
+      : '请完成人机验证以加入群组';
     document.getElementById('v-group-name').textContent = data.groupName;
     var fullName = data.userFirstName + (data.userLastName ? ' ' + data.userLastName : '');
     document.getElementById('v-avatar').textContent = (data.userFirstName || '?').charAt(0).toUpperCase();
@@ -1492,7 +1519,7 @@ async function initVerification(sessionId) {
       if (_vRemaining <= 0) {
         clearInterval(_vTimer);
         show('screen-error');
-        document.getElementById('err-msg').textContent = '验证已超时，请返回群组重新获取验证链接。';
+        document.getElementById('err-msg').textContent = endpoints.timeout;
         return;
       }
       updateVerifyTimer();
@@ -1622,7 +1649,8 @@ async function submitVerification() {
   hideVerifyMsg();
 
   try {
-    var res = await fetch('/api/miniapp/verify', {
+    var endpoints = verificationEndpoints();
+    var res = await fetch(endpoints.submit, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1637,7 +1665,9 @@ async function submitVerification() {
     if (data.success) {
       clearInterval(_vTimer);
       document.getElementById('v-done-sub').textContent =
-        '您已通过 ' + (data.groupName || '群组') + ' 的验证，现在可以正常发言了。';
+        _vMode === 'chatwoot'
+          ? '验证成功。请返回客服聊天并重新发送您的消息。'
+          : '您已通过 ' + (data.groupName || '群组') + ' 的验证，现在可以正常发言了。';
       show('screen-verify-done');
       // Auto close after 3 seconds
       setTimeout(function() {

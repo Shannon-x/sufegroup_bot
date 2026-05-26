@@ -14,6 +14,16 @@ const envSchema = z.object({
   BOT_WEBHOOK_SECRET: z.string().optional(),
   BOT_USERNAME: z.string().optional(),
   BOT_MINIAPP_SHORT_NAME: z.string().optional(),
+
+  // Chatwoot Telegram inbox verification gate
+  CHATWOOT_VERIFICATION_TTL_MINUTES: z.string().transform(Number).default('10'),
+  CHATWOOT_VERIFIED_TTL_DAYS: z.string().transform(Number).default('30'),
+  CHATWOOT_PROMPT_COOLDOWN_SECONDS: z.string().transform(Number).default('300'),
+  CHATWOOT_GATEWAY_BASE_URL: z.string().optional(),
+  CHATWOOT_GATEWAY_TELEGRAM_BOT_TOKEN: z.string().optional(),
+  CHATWOOT_GATEWAY_WEBHOOK_SECRET: z.string().optional(),
+  CHATWOOT_GATEWAY_INBOX_ID: z.string().default('default'),
+  CHATWOOT_GATEWAY_FORWARD_TIMEOUT_SECONDS: z.string().transform(Number).default('5'),
   
   // Database
   DB_HOST: z.string().default('localhost'),
@@ -64,6 +74,16 @@ export const config = {
     webhookSecret: env.BOT_WEBHOOK_SECRET,
     username: env.BOT_USERNAME,
     miniAppShortName: env.BOT_MINIAPP_SHORT_NAME,
+  },
+  chatwootVerification: {
+    ttlMinutes: env.CHATWOOT_VERIFICATION_TTL_MINUTES,
+    verifiedTtlDays: env.CHATWOOT_VERIFIED_TTL_DAYS,
+    promptCooldownSeconds: env.CHATWOOT_PROMPT_COOLDOWN_SECONDS,
+    gatewayBaseUrl: env.CHATWOOT_GATEWAY_BASE_URL,
+    gatewayTelegramBotToken: env.CHATWOOT_GATEWAY_TELEGRAM_BOT_TOKEN,
+    gatewayWebhookSecret: env.CHATWOOT_GATEWAY_WEBHOOK_SECRET,
+    gatewayInboxId: env.CHATWOOT_GATEWAY_INBOX_ID,
+    gatewayForwardTimeoutSeconds: env.CHATWOOT_GATEWAY_FORWARD_TIMEOUT_SECONDS,
   },
   db: {
     host: env.DB_HOST,
