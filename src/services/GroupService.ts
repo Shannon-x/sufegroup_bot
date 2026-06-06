@@ -7,7 +7,7 @@ import { redisService } from './RedisService';
 import { Chat } from 'grammy/types';
 
 const SETTINGS_CACHE_TTL = 300; // 5 minutes
-const ADMIN_CACHE_TTL = 120;    // 2 minutes
+const ADMIN_CACHE_TTL = 60;     // 1 minute (shorter so demotions take effect sooner)
 
 export class GroupService {
   private groupRepository: Repository<Group>;
@@ -114,10 +114,12 @@ export class GroupService {
   /**
    * Check if user is admin with Redis cache to avoid Telegram API calls on every message.
    */
-  async isAdminCached(chatId: number, userId: number, botApi: any): Promise<boolean> {
+  async isAdminCached(chatId: number, userId: number, botApi: any, bypassCache = false): Promise<boolean> {
     const cacheKey = `admin:${chatId}:${userId}`;
-    const cached = await redisService.get(cacheKey);
-    if (cached !== null) return cached === '1';
+    if (!bypassCache) {
+      const cached = await redisService.get(cacheKey);
+      if (cached !== null) return cached === '1';
+    }
 
     try {
       const member = await botApi.getChatMember(chatId, userId);

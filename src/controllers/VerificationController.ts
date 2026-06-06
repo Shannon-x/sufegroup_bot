@@ -6,6 +6,7 @@ import { GroupService } from '../services/GroupService';
 import { AuditService } from '../services/AuditService';
 import { TurnstileService } from '../services/TurnstileService';
 import { TelegramBot } from '../services/TelegramBot';
+import { RateLimitMiddleware } from '../middleware/RateLimitMiddleware';
 import { Logger } from '../utils/logger';
 import { config } from '../config/config';
 import { sendTemporaryMessage, kickUser, unrestrictUser, formatUserMention } from '../utils/telegram';
@@ -25,6 +26,7 @@ export class VerificationController {
   private groupService: GroupService;
   private auditService: AuditService;
   private turnstileService: TurnstileService;
+  private rateLimiter: RateLimitMiddleware;
   private bot: TelegramBot;
   private logger: Logger;
 
@@ -34,6 +36,7 @@ export class VerificationController {
     this.groupService = new GroupService();
     this.auditService = new AuditService();
     this.turnstileService = new TurnstileService();
+    this.rateLimiter = new RateLimitMiddleware();
     this.bot = bot;
     this.logger = new Logger('VerificationController');
   }
@@ -124,6 +127,9 @@ export class VerificationController {
     // Handle verification submission
     fastify.post<{ Body: VerifyBody }>(
       '/api/verify',
+      {
+        preHandler: async (request, reply) => { await this.rateLimiter.apiVerifyLimit(request, reply); },
+      },
       async (request, reply) => {
         const { token, turnstileToken } = request.body;
         const remoteIp = request.ip;

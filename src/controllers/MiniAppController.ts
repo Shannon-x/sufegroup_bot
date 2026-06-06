@@ -12,6 +12,7 @@ import { AuditService } from '../services/AuditService';
 import { Logger } from '../utils/logger';
 import { config } from '../config/config';
 import { TelegramBot } from '../services/TelegramBot';
+import { RateLimitMiddleware } from '../middleware/RateLimitMiddleware';
 import { sendTemporaryMessage, unrestrictUser, formatUserMention } from '../utils/telegram';
 
 // ── Request body schemas ──
@@ -88,6 +89,7 @@ export class MiniAppController {
   private turnstileService: TurnstileService;
   private hcaptchaService: HCaptchaService;
   private auditService: AuditService;
+  private rateLimiter: RateLimitMiddleware;
   private bot: TelegramBot;
   private logger: Logger;
 
@@ -100,6 +102,7 @@ export class MiniAppController {
     this.turnstileService = new TurnstileService();
     this.hcaptchaService = new HCaptchaService();
     this.auditService = new AuditService();
+    this.rateLimiter = new RateLimitMiddleware();
     this.bot = bot;
     this.logger = new Logger('MiniAppController');
   }
@@ -292,7 +295,9 @@ export class MiniAppController {
       const lottery = await this.levelService.getLottery(Number(lotteryId));
       if (!lottery) return reply.code(404).send({ error: '抽奖不存在' });
 
-      const isAdmin = await this.groupService.isAdminCached(Number(lottery.groupId), Number(userId), this.bot.getBot().api);
+      // Destructive action: re-check admin status without cache so a just-demoted
+      // user can't draw within the cache TTL window.
+      const isAdmin = await this.groupService.isAdminCached(Number(lottery.groupId), Number(userId), this.bot.getBot().api, true);
       if (!isAdmin) return reply.code(403).send({ error: 'Forbidden' });
 
       const result = await this.levelService.drawLottery(Number(lotteryId));
@@ -332,7 +337,8 @@ export class MiniAppController {
       const lottery = await this.levelService.getLottery(Number(lotteryId));
       if (!lottery) return reply.code(404).send({ error: '抽奖不存在' });
 
-      const isAdmin = await this.groupService.isAdminCached(Number(lottery.groupId), Number(userId), this.bot.getBot().api);
+      // Destructive action: re-check admin status without cache.
+      const isAdmin = await this.groupService.isAdminCached(Number(lottery.groupId), Number(userId), this.bot.getBot().api, true);
       if (!isAdmin) return reply.code(403).send({ error: 'Forbidden' });
 
       if (lottery.status !== 'active') return reply.code(400).send({ error: '抽奖已结束' });
@@ -349,7 +355,9 @@ export class MiniAppController {
       return reply.send({ success: true });
     });
     // ── Verification: get session info ──
-    fastify.post('/api/miniapp/verify/session', async (request, reply) => {
+    fastify.post('/api/miniapp/verify/session', {
+      preHandler: async (request, reply) => { await this.rateLimiter.verifyPageLimit(request, reply); },
+    }, async (request, reply) => {
       const parsed = z.object({
         initData: z.string().min(1),
         sessionId: z.string().min(1),
@@ -394,7 +402,9 @@ export class MiniAppController {
     });
 
     // ── Verification: submit ──
-    fastify.post('/api/miniapp/verify', async (request, reply) => {
+    fastify.post('/api/miniapp/verify', {
+      preHandler: async (request, reply) => { await this.rateLimiter.apiVerifyLimit(request, reply); },
+    }, async (request, reply) => {
       const parsed = z.object({
         initData: z.string().min(1),
         sessionId: z.string().min(1),
@@ -516,7 +526,9 @@ export class MiniAppController {
     });
 
     // ── Leaderboard ──
-    fastify.post('/api/miniapp/leaderboard', async (request, reply) => {
+    fastify.post('/api/miniapp/leaderboard', {
+      preHandler: async (request, reply) => { await this.rateLimiter.verifyPageLimit(request, reply); },
+    }, async (request, reply) => {
       const parsed = z.object({
         initData: z.string().min(1),
         groupId: z.string().min(1),
@@ -539,10 +551,15 @@ export class MiniAppController {
       const topXpProfiles = await this.levelService.getLeaderboard(groupId, 30);
       const topCoinsProfiles = await this.levelService.getCoinsLeaderboard(groupId, 30);
 
+      // Batch-fetch all referenced users in one query to avoid N+1
+      const userMap = await this.userService.findByIds(
+        [...topXpProfiles, ...topCoinsProfiles].map((p) => p.userId)
+      );
+
       // Helper to map profiles to user infos
-      const mapProfile = async (p: any) => {
-        const user = await this.userService.findById(p.userId);
-        const name = user?.firstName || user?.username || p.userId;
+      const mapProfile = (p: any) => {
+        const user = userMap.get(p.userId);
+        const name = String(user?.firstName || user?.username || p.userId);
         return {
           userId: p.userId,
           name,
@@ -555,8 +572,8 @@ export class MiniAppController {
         };
       };
 
-      const xpList = await Promise.all(topXpProfiles.map(mapProfile));
-      const coinsList = await Promise.all(topCoinsProfiles.map(mapProfile));
+      const xpList = topXpProfiles.map(mapProfile);
+      const coinsList = topCoinsProfiles.map(mapProfile);
 
       // Current user's info
       const myProfile = await this.levelService.getOrCreateProfile(userId, groupId);
@@ -601,7 +618,13 @@ export class MiniAppController {
         .update(dataCheckString)
         .digest('hex');
 
-      if (computedHash !== hash) return null;
+      // Constant-time comparison to avoid timing attacks (guard length first
+      // since timingSafeEqual throws on mismatched buffer lengths).
+      const computedBuf = Buffer.from(computedHash, 'hex');
+      const hashBuf = Buffer.from(hash, 'hex');
+      if (computedBuf.length !== hashBuf.length || !crypto.timingSafeEqual(computedBuf, hashBuf)) {
+        return null;
+      }
 
       const authDate = parseInt(params.get('auth_date') || '0', 10);
       if (Date.now() / 1000 - authDate > 3600) return null;

@@ -1,4 +1,4 @@
-import { Repository } from 'typeorm';
+import { Repository, In } from 'typeorm';
 import { AppDataSource } from '../config/database';
 import { User } from '../entities/User';
 import { Logger } from '../utils/logger';
@@ -64,6 +64,17 @@ export class UserService {
     return this.userRepository.findOne({
       where: { id: userId }
     });
+  }
+
+  /**
+   * Batch-fetch users by id. Returns a Map keyed by user id so callers can
+   * avoid N+1 queries (e.g. leaderboard rendering).
+   */
+  async findByIds(userIds: string[]): Promise<Map<string, User>> {
+    const unique = [...new Set(userIds)].filter(Boolean);
+    if (unique.length === 0) return new Map();
+    const users = await this.userRepository.find({ where: { id: In(unique) } });
+    return new Map(users.map((u) => [u.id, u]));
   }
 
   async findByUsername(username: string): Promise<User | null> {

@@ -249,18 +249,33 @@ export class LevelService {
   // ── Coins ──
 
   async addCoins(userId: string, groupId: string, amount: number): Promise<number> {
-    const profile = await this.getOrCreateProfile(userId, groupId);
-    profile.coins += amount;
-    await this.profileRepo.save(profile);
-    return profile.coins;
+    const amt = Math.max(0, Math.trunc(Number(amount) || 0));
+    await this.getOrCreateProfile(userId, groupId);
+    if (amt > 0) {
+      // Atomic increment to avoid lost updates under concurrency
+      await this.profileRepo
+        .createQueryBuilder()
+        .update(UserGroupProfile)
+        .set({ coins: () => `coins + ${amt}` })
+        .where('"userId" = :userId AND "groupId" = :groupId', { userId, groupId })
+        .execute();
+    }
+    const profile = await this.profileRepo.findOne({ where: { userId, groupId } });
+    return profile?.coins ?? 0;
   }
 
   async deductCoins(userId: string, groupId: string, amount: number): Promise<boolean> {
-    const profile = await this.getOrCreateProfile(userId, groupId);
-    if (profile.coins < amount) return false;
-    profile.coins -= amount;
-    await this.profileRepo.save(profile);
-    return true;
+    const amt = Math.max(0, Math.trunc(Number(amount) || 0));
+    if (amt === 0) return true;
+    await this.getOrCreateProfile(userId, groupId);
+    // Atomic conditional deduction: only succeeds if balance is sufficient
+    const res = await this.profileRepo
+      .createQueryBuilder()
+      .update(UserGroupProfile)
+      .set({ coins: () => `coins - ${amt}` })
+      .where('"userId" = :userId AND "groupId" = :groupId AND coins >= :amt', { userId, groupId, amt })
+      .execute();
+    return (res.affected ?? 0) > 0;
   }
 
   // ── Lottery ──
@@ -285,46 +300,86 @@ export class LevelService {
   }
 
   async joinLottery(lotteryId: number, userId: string, groupId: string): Promise<{ success: true } | { success: false; reason: string }> {
-    const lottery = await this.getLottery(lotteryId);
-    if (!lottery || lottery.status !== 'active') return { success: false, reason: '抽奖不存在或已结束' };
-    if (lottery.groupId !== groupId) return { success: false, reason: '抽奖不属于本群' };
-    if (new Date() > lottery.endsAt) return { success: false, reason: '抽奖已过期' };
-    if (lottery.participants.includes(userId)) return { success: false, reason: '您已参与过' };
+    // Ensure the participant has a profile row before locking the lottery row
+    await this.getOrCreateProfile(userId, groupId);
 
-    if (lottery.minLevel > 0) {
-      const profile = await this.getOrCreateProfile(userId, groupId);
-      if (profile.level < lottery.minLevel) return { success: false, reason: `需要等级 ${lottery.minLevel}，您当前等级 ${profile.level}` };
-    }
-    if (lottery.costCoins > 0) {
-      if (!await this.deductCoins(userId, groupId, lottery.costCoins)) return { success: false, reason: `需要 ${lottery.costCoins} 积分，余额不足` };
-    }
+    // Lock the lottery row for the duration of the join so the participant set
+    // and coin deduction stay consistent (prevents double-join / double-charge).
+    return AppDataSource.transaction(async (manager) => {
+      const lotteryRepo = manager.getRepository(Lottery);
+      const profileRepo = manager.getRepository(UserGroupProfile);
 
-    lottery.participants.push(userId);
-    await this.lotteryRepo.save(lottery);
-    return { success: true };
+      const lottery = await lotteryRepo.findOne({
+        where: { id: lotteryId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!lottery || lottery.status !== 'active') return { success: false, reason: '抽奖不存在或已结束' };
+      if (lottery.groupId !== groupId) return { success: false, reason: '抽奖不属于本群' };
+      if (new Date() > lottery.endsAt) return { success: false, reason: '抽奖已过期' };
+      if (lottery.participants.includes(userId)) return { success: false, reason: '您已参与过' };
+
+      if (lottery.minLevel > 0) {
+        const profile = await profileRepo.findOne({ where: { userId, groupId } });
+        const level = profile?.level ?? 1;
+        if (level < lottery.minLevel) return { success: false, reason: `需要等级 ${lottery.minLevel}，您当前等级 ${level}` };
+      }
+      if (lottery.costCoins > 0) {
+        const amt = Math.trunc(Number(lottery.costCoins) || 0);
+        const res = await profileRepo
+          .createQueryBuilder()
+          .update(UserGroupProfile)
+          .set({ coins: () => `coins - ${amt}` })
+          .where('"userId" = :userId AND "groupId" = :groupId AND coins >= :amt', { userId, groupId, amt })
+          .execute();
+        if ((res.affected ?? 0) === 0) return { success: false, reason: `需要 ${lottery.costCoins} 积分，余额不足` };
+      }
+
+      lottery.participants.push(userId);
+      await lotteryRepo.save(lottery);
+      return { success: true };
+    });
   }
 
   async drawLottery(lotteryId: number): Promise<{ success: boolean; winners?: string[]; lottery?: Lottery; reason?: string }> {
-    const lottery = await this.getLottery(lotteryId);
-    if (!lottery || lottery.status !== 'active') return { success: false, reason: '抽奖不存在或已结束' };
-    if (lottery.participants.length === 0) {
-      lottery.status = 'cancelled';
-      await this.lotteryRepo.save(lottery);
-      return { success: false, reason: '无人参与，抽奖已取消' };
-    }
+    // Atomically claim the draw (active → drawn) inside a transaction so two
+    // concurrent draws cannot both select winners.
+    return AppDataSource.transaction(async (manager) => {
+      const lotteryRepo = manager.getRepository(Lottery);
 
-    const shuffled = [...lottery.participants];
-    // Fisher-Yates shuffle with cryptographically secure randomness
-    for (let i = shuffled.length - 1; i > 0; i--) {
-      const j = crypto.randomInt(0, i + 1);
-      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-    }
-    const winners = shuffled.slice(0, Math.min(lottery.winnerCount, shuffled.length));
+      const claim = await lotteryRepo
+        .createQueryBuilder()
+        .update(Lottery)
+        .set({ status: 'drawn' })
+        .where('id = :id AND status = :status', { id: lotteryId, status: 'active' })
+        .execute();
 
-    lottery.winners = winners;
-    lottery.status = 'drawn';
-    await this.lotteryRepo.save(lottery);
-    return { success: true, winners, lottery };
+      if ((claim.affected ?? 0) === 0) {
+        const existing = await lotteryRepo.findOne({ where: { id: lotteryId } });
+        return { success: false, reason: existing ? '抽奖已结束' : '抽奖不存在' };
+      }
+
+      const lottery = await lotteryRepo.findOne({ where: { id: lotteryId } });
+      if (!lottery) return { success: false, reason: '抽奖不存在' };
+
+      if (lottery.participants.length === 0) {
+        lottery.status = 'cancelled';
+        lottery.winners = null;
+        await lotteryRepo.save(lottery);
+        return { success: false, reason: '无人参与，抽奖已取消' };
+      }
+
+      const shuffled = [...lottery.participants];
+      // Fisher-Yates shuffle with cryptographically secure randomness
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = crypto.randomInt(0, i + 1);
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
+      const winners = shuffled.slice(0, Math.min(lottery.winnerCount, shuffled.length));
+
+      lottery.winners = winners;
+      await lotteryRepo.save(lottery);
+      return { success: true, winners, lottery };
+    });
   }
 
   async cancelLottery(lotteryId: number, userId: string): Promise<{ success: boolean; reason?: string }> {
@@ -332,15 +387,41 @@ export class LevelService {
     if (!lottery || lottery.status !== 'active') return { success: false, reason: '抽奖不存在或已结束' };
     if (lottery.createdBy !== userId) return { success: false, reason: '只有创建者可以取消' };
 
-    if (lottery.costCoins > 0) {
-      for (const pid of lottery.participants) await this.addCoins(pid, lottery.groupId, lottery.costCoins);
-    }
-    lottery.status = 'cancelled';
-    await this.lotteryRepo.save(lottery);
-    return { success: true };
+    // Claim (active → cancelled) and refund all participants in a single
+    // transaction so cancel runs exactly once and refunds are all-or-nothing.
+    return AppDataSource.transaction(async (manager) => {
+      const lotteryRepo = manager.getRepository(Lottery);
+      const profileRepo = manager.getRepository(UserGroupProfile);
+
+      const claim = await lotteryRepo
+        .createQueryBuilder()
+        .update(Lottery)
+        .set({ status: 'cancelled' })
+        .where('id = :id AND status = :status', { id: lotteryId, status: 'active' })
+        .execute();
+      if ((claim.affected ?? 0) === 0) return { success: false, reason: '抽奖已结束' };
+
+      const amt = Math.trunc(Number(lottery.costCoins) || 0);
+      if (amt > 0 && lottery.participants.length > 0) {
+        for (const pid of lottery.participants) {
+          await profileRepo
+            .createQueryBuilder()
+            .update(UserGroupProfile)
+            .set({ coins: () => `coins + ${amt}` })
+            .where('"userId" = :userId AND "groupId" = :groupId', { userId: pid, groupId: lottery.groupId })
+            .execute();
+        }
+      }
+      return { success: true };
+    });
   }
 
   async processExpiredLotteries(): Promise<Lottery[]> {
+    // Best-effort lock so multiple instances/ticks don't iterate concurrently.
+    // drawLottery() is already atomic, so this only avoids duplicate work.
+    const locked = await redisService.acquireLock('lock:process_expired_lotteries', 25);
+    if (!locked) return [];
+
     const expired = await this.lotteryRepo.find({ where: { status: 'active', endsAt: LessThan(new Date()) } });
     const drawn: Lottery[] = [];
     for (const lottery of expired) {
