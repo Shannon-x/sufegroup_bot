@@ -47,7 +47,7 @@ export class WebhookSignatureVerifier {
   }
 
   static generateSignature(body: string): string {
-    return `sha256=${createHmac('sha256', config.bot.webhookSecret)
+    return `sha256=${createHmac('sha256', config.bot.webhookSecret || '')
       .update(body)
       .digest('hex')}`;
   }
