@@ -20,7 +20,10 @@ export type AuditAction =
   | 'command_executed'
   | 'reverify_triggered'
   | 'bot_added'
-  | 'message_filtered';
+  | 'message_filtered'
+  | 'lottery_created'
+  | 'lottery_drawn'
+  | 'lottery_cancelled';
 
 @Entity('audit_logs')
 @Index(['groupId', 'createdAt'])

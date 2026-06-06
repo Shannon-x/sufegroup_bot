@@ -386,9 +386,19 @@ export class LevelService {
     const lottery = await this.getLottery(lotteryId);
     if (!lottery || lottery.status !== 'active') return { success: false, reason: '抽奖不存在或已结束' };
     if (lottery.createdBy !== userId) return { success: false, reason: '只有创建者可以取消' };
+    return this.adminCancelLottery(lotteryId);
+  }
 
-    // Claim (active → cancelled) and refund all participants in a single
-    // transaction so cancel runs exactly once and refunds are all-or-nothing.
+  /**
+   * Cancel a lottery without the creator check (admin panel). Atomically claims
+   * the cancel (active → cancelled) and refunds all participants in a single
+   * transaction, so it runs exactly once and refunds are all-or-nothing even
+   * under concurrent cancel requests.
+   */
+  async adminCancelLottery(lotteryId: number): Promise<{ success: boolean; reason?: string }> {
+    const lottery = await this.getLottery(lotteryId);
+    if (!lottery || lottery.status !== 'active') return { success: false, reason: '抽奖不存在或已结束' };
+
     return AppDataSource.transaction(async (manager) => {
       const lotteryRepo = manager.getRepository(Lottery);
       const profileRepo = manager.getRepository(UserGroupProfile);

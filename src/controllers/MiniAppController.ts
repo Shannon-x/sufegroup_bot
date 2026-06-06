@@ -180,8 +180,9 @@ export class MiniAppController {
       };
 
       const safeUpdates: any = {};
+      const updatesRecord = updates as Record<string, any>;
       for (const key of Object.keys(updates)) {
-        if (allowed[key]) safeUpdates[key] = updates[key];
+        if (allowed[key]) safeUpdates[key] = updatesRecord[key];
       }
 
       // Nested: filter settings (including customKeywords, flood, etc.)
@@ -280,6 +281,14 @@ export class MiniAppController {
         this.logger.warn('Failed to send lottery announcement', e);
       }
 
+      try {
+        await this.auditService.log({
+          groupId, userId, performedBy: userId,
+          action: 'lottery_created',
+          details: `#${lottery.id} ${cleanPrize} ×${cleanCount}${cleanCoins > 0 ? ` 费用${cleanCoins}` : ''}`,
+        });
+      } catch (e) { this.logger.warn('Failed to write lottery audit log', e); }
+
       return reply.send({ success: true, lottery: { id: lottery.id, prize: lottery.prize } });
     });
 
@@ -322,6 +331,14 @@ export class MiniAppController {
         this.logger.warn('Failed to send draw announcement', e);
       }
 
+      try {
+        await this.auditService.log({
+          groupId: lottery.groupId, userId, performedBy: userId,
+          action: 'lottery_drawn',
+          details: `#${lotteryId} 参与${lottery.participants.length} 中奖${(result.winners || []).length}`,
+        });
+      } catch (e) { this.logger.warn('Failed to write lottery audit log', e); }
+
       return reply.send({ success: true, winnersCount: (result.winners || []).length });
     });
 
@@ -343,14 +360,18 @@ export class MiniAppController {
 
       if (lottery.status !== 'active') return reply.code(400).send({ error: '抽奖已结束' });
 
-      // Refund coins if any
-      if (lottery.costCoins > 0) {
-        for (const pid of lottery.participants) {
-          await this.levelService.addCoins(pid, lottery.groupId, lottery.costCoins);
-        }
-      }
-      lottery.status = 'cancelled';
-      await this.levelService.saveLottery(lottery);
+      // Atomic cancel + transactional refund (prevents double-refund on
+      // concurrent cancels — the inline non-atomic loop was a race).
+      const cancelResult = await this.levelService.adminCancelLottery(Number(lotteryId));
+      if (!cancelResult.success) return reply.code(400).send({ error: cancelResult.reason });
+
+      try {
+        await this.auditService.log({
+          groupId: lottery.groupId, userId, performedBy: userId,
+          action: 'lottery_cancelled',
+          details: `#${lotteryId} ${lottery.prize}`,
+        });
+      } catch (e) { this.logger.warn('Failed to write lottery audit log', e); }
 
       return reply.send({ success: true });
     });

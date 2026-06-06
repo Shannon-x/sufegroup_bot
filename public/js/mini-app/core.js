@@ -54,11 +54,21 @@ function toast(msg, isErr) {
 
 async function api(path, body) {
   var payload = Object.assign({ initData: initData }, body || {});
-  var res = await fetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
+  var ctrl = new AbortController();
+  var timer = setTimeout(function () { ctrl.abort(); }, 20000);
+  var res;
+  try {
+    res = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: ctrl.signal
+    });
+  } catch (e) {
+    throw new Error(ctrl.signal.aborted ? '请求超时，请重试' : '网络错误，请重试');
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     var j = {}; try { j = await res.clone().json(); } catch(e){}
     throw new Error(j.error || ('HTTP ' + res.status));

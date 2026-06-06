@@ -43,7 +43,7 @@ export class GroupService {
       this.logger.info(`Created new group: ${groupId}`);
     } else {
       let updated = false;
-      if ('title' in chat && group.title !== chat.title) { group.title = chat.title; updated = true; }
+      if ('title' in chat && chat.title && group.title !== chat.title) { group.title = chat.title; updated = true; }
       if ('username' in chat && group.username !== chat.username) { group.username = chat.username; updated = true; }
       if (updated) {
         await this.groupRepository.save(group);
