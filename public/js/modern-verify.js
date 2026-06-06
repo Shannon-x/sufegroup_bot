@@ -76,12 +76,16 @@
 
     var token = form.querySelector('input[name="token"]').value;
 
+    var ctrl = new AbortController();
+    var timer = setTimeout(function () { ctrl.abort(); }, 20000);
+
     fetch('/api/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: token, turnstileToken: turnstileToken })
+      body: JSON.stringify({ token: token, turnstileToken: turnstileToken }),
+      signal: ctrl.signal
     })
-      .then(function (res) { return res.json(); })
+      .then(function (res) { clearTimeout(timer); return res.json(); })
       .then(function (data) {
         if (data.success) {
           showMsg('success', data.message);
@@ -96,7 +100,8 @@
         }
       })
       .catch(function () {
-        showMsg('error', '网络错误，请重试');
+        clearTimeout(timer);
+        showMsg('error', ctrl.signal.aborted ? '请求超时，请重试' : '网络错误，请重试');
         submitBtn.disabled = false;
         submitBtn.classList.remove('loading');
         submitBtn.textContent = '完成验证';

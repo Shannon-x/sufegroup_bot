@@ -26,6 +26,12 @@ import { redisService } from './services/RedisService';
 async function bootstrap() {
   const logger = new Logger('Main');
 
+  // M-11: warn (don't fail) when HMAC_SECRET isn't set independently — it falls
+  // back to JWT_SECRET, which still works but is weaker isolation in production.
+  if (!process.env.HMAC_SECRET) {
+    logger.warn('HMAC_SECRET 未单独设置，已回退使用 JWT_SECRET；生产环境建议配置独立的 HMAC_SECRET。');
+  }
+
   try {
     // Initialize database
     logger.info('Connecting to database...');
