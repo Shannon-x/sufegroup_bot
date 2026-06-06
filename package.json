@@ -11,7 +11,8 @@
     "migration:generate": "typeorm migration:generate -d src/config/database.ts",
     "migration:create": "typeorm migration:create",
     "lint": "eslint src/**/*.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "keywords": [
     "telegram",
@@ -51,6 +52,7 @@
     "eslint": "^8.56.0",
     "nodemon": "^3.0.3",
     "ts-node": "^10.9.2",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "vitest": "^4.1.8"
   }
 }

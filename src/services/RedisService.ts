@@ -49,6 +49,21 @@ export class RedisService {
     return result === 1;
   }
 
+  /**
+   * Best-effort distributed lock via SET key val NX EX ttl.
+   * Returns true if the lock was acquired (key did not previously exist).
+   */
+  async acquireLock(key: string, ttlSeconds: number): Promise<boolean> {
+    try {
+      const result = await this.client.set(key, '1', 'EX', ttlSeconds, 'NX');
+      return result === 'OK';
+    } catch (err) {
+      this.logger.error('acquireLock error', err);
+      // Fail-open: if Redis is unavailable, allow the caller to proceed.
+      return true;
+    }
+  }
+
   async increment(key: string, ttlSeconds?: number): Promise<number> {
     const result = await this.client.incr(key);
     if (ttlSeconds && result === 1) {

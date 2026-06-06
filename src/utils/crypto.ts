@@ -24,10 +24,11 @@ export class CryptoUtils {
 
   static verifyHmac(data: string, signature: string): boolean {
     const expected = this.generateHmac(data);
-    return crypto.timingSafeEqual(
-      Buffer.from(expected),
-      Buffer.from(signature)
-    );
+    const expectedBuf = Buffer.from(expected);
+    const signatureBuf = Buffer.from(signature || '');
+    // timingSafeEqual throws on length mismatch; guard length first (still constant-time for equal lengths)
+    if (expectedBuf.length !== signatureBuf.length) return false;
+    return crypto.timingSafeEqual(expectedBuf, signatureBuf);
   }
 
   static generateVerificationToken(userId: string, groupId: string, sessionId: string): string {

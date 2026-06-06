@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>验证页重设计预览 · Claude 设计系统</title>
+<!--
+  ⚠️ 这是「非生产」的设计演示原型，用于直观对比 Claude.com 设计系统应用到入群验证页的效果。
+  - 直接用浏览器打开本文件（file://）即可预览，serif/sans 字体走 Google Fonts CDN。
+  - 生产落地时：字体需「自托管」到 /public/fonts（因 main.ts 的 CSP styleSrc 未放行 fonts.googleapis.com）。
+  - 顶部控制条仅用于演示三种状态切换，生产页面不含。
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ════════════════════════════════════════════════════════════
+   Claude.com 设计 token —— 浅色（奶油）方案
+   验证/成功/失败 这三个独立全屏页采用奶油画布（与 Claude 主基调一致）
+═══════════════════════════════════════════════════════════════ */
+:root {
+  /* 表面 */
+  --canvas:              #faf9f5;  /* 暖奶油画布（默认底） */
+  --surface-soft:        #f5f0e8;
+  --surface-card:        #efe9de;  /* 功能卡 */
+  --surface-cream-strong:#e8e0d2;
+  --surface-dark:        #181715;  /* 暖墨 navy（产品 chrome / 页脚） */
+  /* 品牌 */
+  --primary:             #cc785c;  /* 珊瑚（主 CTA） */
+  --primary-active:      #a9583e;
+  --primary-disabled:    #e6dfd8;
+  --accent-teal:         #5db8a6;
+  /* 文字 */
+  --ink:                 #141413;  /* 标题/正文主色 */
+  --body-strong:         #252523;
+  --body:                #3d3d3a;
+  --muted:               #6c6a64;
+  --muted-soft:          #8e8b82;
+  --on-primary:          #ffffff;
+  /* 边框 */
+  --hairline:            #e6dfd8;
+  --hairline-soft:       #ebe6df;
+  /* 语义 */
+  --success:             #5db872;
+  --success-soft:        #e7f3ea;
+  --error:               #c64545;
+  --error-soft:          #f7e9e7;
+  /* 圆角 */
+  --r-md: 8px;   /* 按钮/输入 */
+  --r-lg: 12px;  /* 卡片 */
+  --r-xl: 16px;  /* hero 容器 */
+  --r-pill: 9999px;
+  /* 字体 */
+  --serif: "Cormorant Garamond", "Tiempos Headline", Georgia, "Times New Roman", serif;
+  --sans:  "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", system-ui, sans-serif;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; }
+body {
+  font-family: var(--sans);
+  background: var(--canvas);
+  color: var(--body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── 演示控制条（生产环境不含） ── */
+.demo-bar {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 999;
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px;
+  background: var(--surface-dark); color: var(--canvas);
+  font-size: 13px;
+}
+.demo-bar b { font-weight: 600; letter-spacing: .2px; }
+.demo-bar .spike { width: 14px; height: 14px; flex-shrink: 0; }
+.demo-seg { display: inline-flex; gap: 4px; margin-left: auto; background: rgba(255,255,255,.08); padding: 3px; border-radius: var(--r-md); }
+.demo-seg button {
+  font-family: var(--sans); font-size: 12.5px; font-weight: 500;
+  padding: 5px 12px; border: none; border-radius: 6px; cursor: pointer;
+  background: transparent; color: var(--muted-soft);
+}
+.demo-seg button.on { background: var(--primary); color: #fff; }
+
+/* ── 页面布局 ── */
+.page {
+  min-height: 100vh; min-height: 100dvh;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+}
+
+/* ── 卡片 ── */
+.card {
+  width: 100%; max-width: 420px;
+  background: var(--canvas);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(20,20,19,0.04);
+  animation: cardIn .45s cubic-bezier(.2,.7,.2,1);
+}
+@keyframes cardIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+/* ── 头部 ── */
+.card-header { padding: 36px 32px 0; text-align: center; }
+.spike-mark { width: 22px; height: 22px; margin: 0 auto 18px; display: block; color: var(--ink); }
+.group-badge {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 13px; margin-bottom: 18px;
+  background: var(--surface-card);
+  border-radius: var(--r-pill);
+  font-size: 13px; font-weight: 500; color: var(--body-strong);
+}
+.group-badge-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent-teal); flex-shrink: 0; }
+.card-title {
+  font-family: var(--serif);
+  font-size: 34px; font-weight: 600; line-height: 1.12; letter-spacing: -0.8px;
+  color: var(--ink); margin-bottom: 8px;
+}
+.card-subtitle { font-size: 15px; line-height: 1.55; color: var(--muted); }
+
+/* ── 卡片主体 ── */
+.card-body { padding: 28px 32px 32px; }
+
+/* ── 用户行 ── */
+.user-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 16px;
+  background: var(--surface-card);
+  border-radius: var(--r-md);
+}
+.user-avatar {
+  width: 40px; height: 40px; border-radius: var(--r-md);
+  background: var(--primary);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 17px; font-weight: 600; color: #fff; flex-shrink: 0;
+}
+.user-name { font-size: 15px; font-weight: 500; line-height: 1.3; color: var(--ink); }
+.user-handle { font-size: 13px; color: var(--muted-soft); }
+
+/* ── 计时器 ── */
+.timer-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px; margin-top: 10px;
+  background: var(--surface-card);
+  border-radius: var(--r-md);
+}
+.timer-label { font-size: 14px; color: var(--muted); }
+.timer-value { font-size: 15px; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+.timer-value.urgent { color: var(--error); }
+.timer-bar { width: 100%; height: 3px; margin-top: 10px; background: var(--hairline); border-radius: 2px; overflow: hidden; }
+.timer-bar-fill { height: 100%; width: 70%; background: var(--accent-teal); border-radius: 2px; transition: width 1s linear; }
+.timer-bar-fill.urgent { background: var(--error); }
+
+/* ── 验证组件占位（演示） ── */
+.captcha-section { margin-top: 24px; }
+.captcha-wrapper {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 70px; padding: 14px;
+  border: 1px dashed var(--hairline);
+  border-radius: var(--r-md);
+  background: var(--surface-soft);
+  color: var(--muted-soft); font-size: 13px;
+}
+
+/* ── 按钮 ── */
+.btn-primary {
+  display: flex; align-items: center; justify-content: center;
+  width: 100%; height: 48px; margin-top: 20px;
+  background: var(--primary); color: var(--on-primary);
+  border: none; border-radius: var(--r-md);
+  font-family: var(--sans); font-size: 15px; font-weight: 500;
+  cursor: pointer; text-decoration: none;
+  transition: background .15s, transform .12s;
+}
+.btn-primary:hover:not(:disabled) { background: var(--primary-active); }
+.btn-primary:active:not(:disabled) { transform: scale(.985); }
+.btn-primary:disabled { background: var(--primary-disabled); color: var(--muted-soft); cursor: not-allowed; }
+.btn-secondary {
+  display: flex; align-items: center; justify-content: center;
+  width: 100%; height: 48px;
+  background: var(--canvas); color: var(--ink);
+  border: 1px solid var(--hairline); border-radius: var(--r-md);
+  font-family: var(--sans); font-size: 15px; font-weight: 500;
+  cursor: pointer; text-decoration: none; transition: background .15s, border-color .15s;
+}
+.btn-secondary:hover { background: var(--surface-soft); border-color: var(--muted-soft); }
+
+/* ── 成功 / 失败 ── */
+.state-wrap { text-align: center; padding: 44px 32px; }
+.state-icon {
+  width: 64px; height: 64px; margin: 0 auto 24px;
+  border-radius: 50%; display: flex; align-items: center; justify-content: center;
+}
+.state-icon.ok { background: var(--success-soft); }
+.state-icon.err { background: var(--error-soft); }
+.state-icon svg { width: 30px; height: 30px; fill: none; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+.state-icon.ok svg { stroke: var(--success); }
+.state-icon.err svg { stroke: var(--error); }
+.state-title {
+  font-family: var(--serif);
+  font-size: 30px; font-weight: 600; letter-spacing: -0.6px; line-height: 1.15;
+  color: var(--ink); margin-bottom: 10px;
+}
+.state-desc { font-size: 15px; line-height: 1.6; color: var(--muted); margin-bottom: 28px; }
+.state-actions { display: flex; flex-direction: column; gap: 10px; }
+.redirect-hint { font-size: 13px; color: var(--muted-soft); margin-top: 16px; }
+
+/* ── 页脚（暖墨 navy，呼应 Claude 节奏） ── */
+.mini-footer {
+  margin-top: 18px; text-align: center;
+  font-size: 12px; color: var(--muted-soft);
+}
+
+/* ── 屏幕切换 ── */
+.screen { display: none; }
+.screen.active { display: block; }
+
+@media (max-width: 440px) {
+  .card-header { padding: 28px 22px 0; }
+  .card-body { padding: 22px 22px 26px; }
+  .card-title { font-size: 29px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+</style>
+</head>
+<body>
+
+<!-- 演示控制条（生产不含） -->
+<div class="demo-bar">
+  <svg class="spike" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2v20M2 12h20M4.9 4.9l14.2 14.2M19.1 4.9L4.9 19.1"/></svg>
+  <b>验证页重设计预览</b>
+  <span style="color:#a09d96">Claude 设计系统 · 奶油 + 珊瑚 + serif</span>
+  <div class="demo-seg">
+    <button class="on" data-screen="verify">验证</button>
+    <button data-screen="success">成功</button>
+    <button data-screen="error">失败</button>
+  </div>
+</div>
+
+<!-- ═══ 验证页 ═══ -->
+<div class="screen active" id="screen-verify">
+  <div class="page">
+    <div>
+      <div class="card">
+        <div class="card-header">
+          <svg class="spike-mark" viewBox="0 0 24 24" fill="currentColor"><path d="M12 1.5v21M1.5 12h21M4.2 4.2l15.6 15.6M19.8 4.2L4.2 19.8"/></svg>
+          <div class="group-badge"><span class="group-badge-dot"></span> 上财交流群</div>
+          <h1 class="card-title">入群验证</h1>
+          <p class="card-subtitle">请完成人机验证以加入群组</p>
+        </div>
+        <div class="card-body">
+          <div class="user-row">
+            <div class="user-avatar">S</div>
+            <div>
+              <div class="user-name">Shannon</div>
+              <div class="user-handle">@shannon</div>
+            </div>
+          </div>
+          <div class="timer-row">
+            <span class="timer-label">剩余时间</span>
+            <span class="timer-value" id="timer">04:12</span>
+          </div>
+          <div class="timer-bar"><div class="timer-bar-fill" id="bar"></div></div>
+          <div class="captcha-section">
+            <div class="captcha-wrapper">人机验证组件（Turnstile / hCaptcha）</div>
+            <button class="btn-primary" id="submitBtn" disabled>完成验证</button>
+          </div>
+        </div>
+      </div>
+      <div class="mini-footer">由 小菲 守护 · Anthropic 风格设计预览</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ 成功页 ═══ -->
+<div class="screen" id="screen-success">
+  <div class="page">
+    <div class="card">
+      <div class="state-wrap">
+        <div class="state-icon ok">
+          <svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>
+        </div>
+        <h1 class="state-title">验证成功</h1>
+        <p class="state-desc">您已通过验证，现在可以在群组中正常发言了。</p>
+        <div class="state-actions">
+          <a href="#" class="btn-primary">返回 Telegram</a>
+        </div>
+        <p class="redirect-hint">将在 5 秒后自动跳转…</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ 失败页 ═══ -->
+<div class="screen" id="screen-error">
+  <div class="page">
+    <div class="card">
+      <div class="state-wrap">
+        <div class="state-icon err">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="16.5" x2="12.01" y2="16.5"/></svg>
+        </div>
+        <h1 class="state-title">验证失败</h1>
+        <p class="state-desc">验证已过期，请返回群组重新获取验证链接。</p>
+        <div class="state-actions">
+          <a href="#" class="btn-secondary">重试</a>
+          <a href="#" class="btn-primary">返回 Telegram</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// 演示：状态切换
+document.querySelectorAll('.demo-seg button').forEach(function(b){
+  b.addEventListener('click', function(){
+    document.querySelectorAll('.demo-seg button').forEach(function(x){ x.classList.remove('on'); });
+    b.classList.add('on');
+    document.querySelectorAll('.screen').forEach(function(s){ s.classList.remove('active'); });
+    document.getElementById('screen-' + b.dataset.screen).classList.add('active');
+  });
+});
+
+// 演示：验证页倒计时 + 进度条 + 紧急态 + 启用按钮
+(function(){
+  var total = 252, remain = total;
+  var t = document.getElementById('timer'), bar = document.getElementById('bar'), btn = document.getElementById('submitBtn');
+  function pad(n){ return n < 10 ? '0'+n : ''+n; }
+  bar.style.width = '100%';
+  var iv = setInterval(function(){
+    remain--;
+    if (remain <= 0) { clearInterval(iv); return; }
+    t.textContent = Math.floor(remain/60) + ':' + pad(remain%60);
+    bar.style.width = (remain/total*100) + '%';
+    if (remain <= 120) { t.classList.add('urgent'); bar.classList.add('urgent'); }
+  }, 1000);
+  // 模拟 3 秒后人机验证通过、按钮可用
+  setTimeout(function(){ btn.disabled = false; }, 3000);
+})();
+</script>
+</body>
+</html>

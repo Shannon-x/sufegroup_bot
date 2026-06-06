@@ -56,8 +56,9 @@ async function bootstrap() {
         directives: {
           defaultSrc: ["'self'"],
           scriptSrc: ["'self'", "'unsafe-inline'", 'https://challenges.cloudflare.com', 'https://telegram.org', 'https://js.hcaptcha.com', 'https://newassets.hcaptcha.com'],
-          // Allow inline event handlers (onclick=...) required by Mini App
-          scriptSrcAttr: ["'unsafe-inline'"],
+          // No inline event handlers in our markup (all bound via addEventListener),
+          // so block inline event-handler attributes to shrink the XSS surface.
+          scriptSrcAttr: ["'none'"],
           styleSrc: ["'self'", "'unsafe-inline'", 'https://newassets.hcaptcha.com'],
           frameSrc: ['https://challenges.cloudflare.com', 'https://newassets.hcaptcha.com'],
           connectSrc: ["'self'", 'https://challenges.cloudflare.com', 'https://telegram.org', 'https://api.hcaptcha.com', 'https://newassets.hcaptcha.com'],

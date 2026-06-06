@@ -11,6 +11,9 @@
     <div class="page">
         <div class="card">
             <div class="card-header">
+                <svg class="spike-mark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M12 1.5v21M1.5 12h21M4.2 4.2l15.6 15.6M19.8 4.2L4.2 19.8"/>
+                </svg>
                 <div class="group-badge">
                     <span class="group-badge-dot"></span>
                     <%= groupName %>
@@ -50,7 +53,7 @@
                                  data-sitekey="<%= siteKey %>"
                                  data-callback="onTurnstileSuccess"
                                  data-error-callback="onTurnstileError"
-                                 data-theme="dark">
+                                 data-theme="auto">
                             </div>
                         </div>
 
