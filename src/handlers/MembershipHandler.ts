@@ -7,8 +7,10 @@ import { GroupService } from '../services/GroupService';
 import { VerificationService } from '../services/VerificationService';
 import { AuditService } from '../services/AuditService';
 import { ContentFilterService } from '../services/ContentFilterService';
+import { LevelService } from '../services/LevelService';
 import { Logger } from '../utils/logger';
 import { config } from '../config/config';
+import { escapeHtml } from '../utils/markdown';
 
 export class MembershipHandler {
   private logger: Logger;
@@ -20,7 +22,8 @@ export class MembershipHandler {
     private groupService: GroupService,
     private verificationService: VerificationService,
     private auditService: AuditService,
-    private contentFilterService: ContentFilterService
+    private contentFilterService: ContentFilterService,
+    private levelService: LevelService
   ) {
     this.logger = new Logger('MembershipHandler');
   }
@@ -133,6 +136,13 @@ export class MembershipHandler {
         chatId: chat.id
       });
 
+      // Drop the member out of leaderboards/ranks. Done up-front (independent of
+      // the User/Group rows) so it also covers kicks/bans, which surface here as
+      // a left/kicked status change.
+      await this.levelService
+        .markInactive(telegramUser.id.toString(), chat.id.toString())
+        .catch((e) => this.logger.debug('markInactive failed', e));
+
       const user = await this.userService.findById(telegramUser.id.toString());
       if (!user) return;
 
@@ -193,6 +203,12 @@ export class MembershipHandler {
         // Get or create user and group
         const user = await this.userService.findOrCreate(telegramUser);
         const { group, settings } = await this.groupService.findOrCreate(chat);
+
+        // A former member rejoining: revive their existing profile so prior
+        // XP/level/coins reappear on the leaderboard (no-op if none exists).
+        await this.levelService
+          .reactivateProfile(user.id, group.id)
+          .catch((e) => this.logger.debug('reactivateProfile failed', e));
 
         // Record join time for content filter's newUserLinkDelay
         await this.contentFilterService.recordUserJoinTime(group.id, user.id);
@@ -300,8 +316,8 @@ export class MembershipHandler {
     sessionId: string
   ): Promise<any> {
     try {
-      const welcomeText = `新成员【${user.firstName}】 你好！
-小菲欢迎您加入${group.title}
+      const welcomeText = `新成员【${escapeHtml(user.firstName)}】 你好！
+小菲欢迎您加入${escapeHtml(group.title)}
 您当前需要完成验证才能解除限制，验证有效时间不超过${settings.ttlMinutes * 60} 秒。
 过期会被踢出或封禁，请尽快。`;
 
@@ -323,7 +339,7 @@ export class MembershipHandler {
         welcomeText,
         {
           reply_markup: keyboard,
-          parse_mode: 'Markdown'
+          parse_mode: 'HTML'
         }
       );
 
@@ -363,7 +379,7 @@ export class MembershipHandler {
 
       const { group } = await this.groupService.findOrCreate(chat);
 
-      const welcomeMsg = `🎉 感谢将我添加到 **${chat.title}**！\n\n` +
+      const welcomeMsg = `🎉 感谢将我添加到 <b>${escapeHtml(chat.title)}</b>！\n\n` +
         `为了让我正常工作，请：\n` +
         `1. 授予我管理员权限（删除消息、限制用户）\n` +
         `2. 使用 /settings 命令配置验证选项\n` +
@@ -371,7 +387,7 @@ export class MembershipHandler {
         `输入 /help 查看所有可用命令。`;
 
       await ctx.api.sendMessage(chat.id, welcomeMsg, {
-        parse_mode: 'Markdown'
+        parse_mode: 'HTML'
       });
 
       await this.auditService.log({

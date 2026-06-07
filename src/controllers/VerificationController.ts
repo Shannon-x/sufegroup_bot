@@ -10,6 +10,7 @@ import { RateLimitMiddleware } from '../middleware/RateLimitMiddleware';
 import { Logger } from '../utils/logger';
 import { config } from '../config/config';
 import { sendTemporaryMessage, kickUser, unrestrictUser, formatUserMention } from '../utils/telegram';
+import { escapeHtml } from '../utils/markdown';
 
 interface VerifyQuerystring {
   token: string;
@@ -79,7 +80,7 @@ export class VerificationController {
               this.bot.getBot(),
               Number(tokenData.groupId),
               `⏰ ${userMention} 尝试使用已过期的验证链接。请返回群组重新获取验证链接。`,
-              { parse_mode: 'Markdown' }
+              { parse_mode: 'HTML' }
             );
           } catch (error) {
             this.logger.error('Failed to send expiration notification', error);
@@ -174,7 +175,7 @@ export class VerificationController {
               this.bot.getBot(),
               Number(session.groupId),
               `❌ ${userMention} 验证失败（尝试次数过多），已被移除。`,
-              { parse_mode: 'Markdown' }
+              { parse_mode: 'HTML' }
             );
 
             await kickUser(this.bot.getBot(), Number(session.groupId), Number(session.userId));
@@ -250,8 +251,8 @@ export class VerificationController {
 
           await this.bot.getBot().api.sendMessage(
             userId,
-            `✅ 验证成功！\n\n您已成功完成 **${groupName}** 的验证，现在可以正常发言了。\n\n感谢您的配合！`,
-            { parse_mode: 'Markdown' }
+            `✅ 验证成功！\n\n您已成功完成 <b>${escapeHtml(groupName)}</b> 的验证，现在可以正常发言了。\n\n感谢您的配合！`,
+            { parse_mode: 'HTML' }
           );
         } catch (error) {
           this.logger.debug('Could not send private success notification (user may not have started the bot)');
@@ -266,7 +267,7 @@ export class VerificationController {
             this.bot.getBot(),
             chatId,
             `✅ ${userMention} 已成功通过验证，欢迎加入群组！`,
-            { parse_mode: 'Markdown' }
+            { parse_mode: 'HTML' }
           );
         } catch (error) {
           this.logger.error('Failed to send group notification', error);

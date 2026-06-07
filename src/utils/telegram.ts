@@ -1,5 +1,6 @@
 import { Bot } from 'grammy';
 import { Logger } from './logger';
+import { buildMention } from './markdown';
 
 const logger = new Logger('TelegramUtils');
 
@@ -75,13 +76,15 @@ export async function unrestrictUser(bot: Bot<any>, chatId: number, userId: numb
 }
 
 /**
- * Format a user mention string for Markdown.
+ * Format a clickable user mention for Telegram **HTML** mode.
+ *
+ * NOTE: callers must send with `parse_mode: 'HTML'`. We moved off legacy
+ * Markdown because an unescaped nickname containing `_ * [ \`` made Telegram
+ * return 400 and silently drop the whole notification.
  */
-export function formatUserMention(user: { username?: string; firstName?: string; id?: string } | null, userId?: string): string {
-  if (!user) {
-    return `[用户](tg://user?id=${userId})`;
-  }
-  return user.username
-    ? `@${user.username}`
-    : `[${user.firstName || '用户'}](tg://user?id=${user.id || userId})`;
+export function formatUserMention(
+  user: { username?: string | null; firstName?: string | null; id?: string | number | null } | null,
+  userId?: string
+): string {
+  return buildMention(user, userId);
 }

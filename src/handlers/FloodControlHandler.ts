@@ -5,6 +5,7 @@ import { AuditService } from '../services/AuditService';
 import { redisService } from '../services/RedisService';
 import { Logger } from '../utils/logger';
 import { sendTemporaryMessage } from '../utils/telegram';
+import { buildMention } from '../utils/markdown';
 
 export class FloodControlHandler {
   private logger: Logger;
@@ -68,15 +69,12 @@ export class FloodControlHandler {
     // Set the flag for the window duration
     await redisService.set(floodActedKey, '1', floodConfig.windowSeconds);
 
-    const firstName = ctx.from?.first_name || '用户';
-    const userMention = ctx.from?.username
-      ? `@${ctx.from.username}`
-      : `[${firstName}](tg://user?id=${userIdStr})`;
+    const userMention = buildMention(ctx.from, userIdStr);
 
     switch (floodConfig.action) {
       case 'warn': {
         const warnText = `⚠️ ${userMention} 请勿刷屏！您在 ${floodConfig.windowSeconds} 秒内发送了过多消息。`;
-        await sendTemporaryMessage(this.bot, chatIdNum, warnText, { parse_mode: 'Markdown' }, 10000);
+        await sendTemporaryMessage(this.bot, chatIdNum, warnText, { parse_mode: 'HTML' }, 10000);
         break;
       }
 
@@ -98,7 +96,7 @@ export class FloodControlHandler {
         }
 
         const muteText = `🔇 ${userMention} 因刷屏已被禁言 ${floodConfig.muteDuration} 分钟`;
-        await sendTemporaryMessage(this.bot, chatIdNum, muteText, { parse_mode: 'Markdown' });
+        await sendTemporaryMessage(this.bot, chatIdNum, muteText, { parse_mode: 'HTML' });
         break;
       }
 
@@ -110,7 +108,7 @@ export class FloodControlHandler {
         }
 
         const banText = `🚫 ${userMention} 因恶意刷屏已被封禁`;
-        await sendTemporaryMessage(this.bot, chatIdNum, banText, { parse_mode: 'Markdown' });
+        await sendTemporaryMessage(this.bot, chatIdNum, banText, { parse_mode: 'HTML' });
         break;
       }
     }

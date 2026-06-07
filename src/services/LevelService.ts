@@ -127,31 +127,53 @@ export class LevelService {
     const xpKey = `xp_buf:${groupId}:${userId}`;
     const msgKey = `msg_buf:${groupId}:${userId}`;
 
-    const xpStr = await redisService.get(xpKey);
-    const msgStr = await redisService.get(msgKey);
+    // Atomically drain the buffers so XP added between read and clear can't be
+    // lost (the previous GET-then-DELETE had a lost-update window).
+    const xpStr = await redisService.getAndDelete(xpKey);
+    const msgStr = await redisService.getAndDelete(msgKey);
     const xpToAdd = xpStr ? parseInt(xpStr, 10) : 0;
     const msgsToAdd = msgStr ? parseInt(msgStr, 10) : 0;
 
     if (xpToAdd <= 0) return null;
 
-    // Clear buffer
-    await redisService.delete(xpKey);
-    await redisService.delete(msgKey);
+    // Ensure the row exists, then increment atomically in SQL. Using a relative
+    // `xp = xp + n` update (instead of read-modify-write + save()) prevents
+    // concurrent flushes / checkins from clobbering each other — and crucially
+    // avoids overwriting an unrelated column like coins back to a stale value.
+    await this.getOrCreateProfile(userId, groupId);
 
-    const profile = await this.getOrCreateProfile(userId, groupId);
-    const oldLevel = profile.level;
+    const updateResult = await this.profileRepo
+      .createQueryBuilder()
+      .update(UserGroupProfile)
+      .set({
+        xp: () => `xp + ${xpToAdd}`,
+        totalMessages: () => `"totalMessages" + ${msgsToAdd}`,
+      })
+      .where('"userId" = :userId AND "groupId" = :groupId', { userId, groupId })
+      .returning(['xp', 'level'])
+      .execute();
 
-    profile.xp += xpToAdd;
-    profile.totalMessages += msgsToAdd;
-    profile.level = LevelService.calculateLevel(profile.xp);
+    const row = updateResult.raw?.[0];
+    if (!row) return null;
 
-    await this.profileRepo.save(profile);
+    const newXp = Number(row.xp);
+    const oldLevel = Number(row.level); // level column before recompute
+    const newLevel = LevelService.calculateLevel(newXp);
 
-    if (profile.level > oldLevel) {
+    if (newLevel !== oldLevel) {
+      await this.profileRepo
+        .createQueryBuilder()
+        .update(UserGroupProfile)
+        .set({ level: newLevel })
+        .where('"userId" = :userId AND "groupId" = :groupId', { userId, groupId })
+        .execute();
+    }
+
+    if (newLevel > oldLevel) {
       return {
         leveledUp: true,
-        newLevel: profile.level,
-        title: LevelService.getTitle(profile.level, customTitles),
+        newLevel,
+        title: LevelService.getTitle(newLevel, customTitles),
       };
     }
     return null;
@@ -159,7 +181,11 @@ export class LevelService {
 
   // ── Checkin ──
 
-  async checkin(userId: string, groupId: string): Promise<{
+  async checkin(
+    userId: string,
+    groupId: string,
+    customTitles?: Array<{ minLevel: number; title: string }> | null
+  ): Promise<{
     success: boolean;
     alreadyChecked?: boolean;
     coins: number;
@@ -167,48 +193,79 @@ export class LevelService {
     bonusCoins: number;
     xp: number;
     totalCoins: number;
+    leveledUp: boolean;
+    newLevel: number;
+    title: string;
   }> {
-    const profile = await this.getOrCreateProfile(userId, groupId);
+    await this.getOrCreateProfile(userId, groupId);
     const today = this.getTodayStr();
-
-    if (profile.lastCheckinDate === today) {
-      return { success: false, alreadyChecked: true, coins: 0, streak: profile.checkinStreak, bonusCoins: 0, xp: 0, totalCoins: profile.coins };
-    }
-
     const yesterday = this.getDateStr(-1);
-    profile.checkinStreak = profile.lastCheckinDate === yesterday ? profile.checkinStreak + 1 : 1;
-    profile.lastCheckinDate = today;
 
-    let coins = CHECKIN_BASE_COINS;
-    let bonusCoins = 0;
+    // Lock the profile row for the whole check-in so the streak read, the once-
+    // per-day guard and the xp/coins writes stay consistent. Concurrent message
+    // XP flushes (relative `xp = xp + n` updates) serialize against this lock,
+    // so neither side loses the other's increment.
+    return AppDataSource.transaction(async (manager) => {
+      const repo = manager.getRepository(UserGroupProfile);
+      const profile = await repo.findOne({
+        where: { userId, groupId },
+        lock: { mode: 'pessimistic_write' },
+      });
 
-    const streakBonus = Math.min(profile.checkinStreak * CHECKIN_STREAK_BONUS, CHECKIN_STREAK_MAX_BONUS);
-    coins += streakBonus;
+      if (!profile || profile.lastCheckinDate === today) {
+        const lvl = profile?.level ?? 1;
+        return {
+          success: false,
+          alreadyChecked: !!profile,
+          coins: 0,
+          streak: profile?.checkinStreak ?? 0,
+          bonusCoins: 0,
+          xp: 0,
+          totalCoins: profile?.coins ?? 0,
+          leveledUp: false,
+          newLevel: lvl,
+          title: LevelService.getTitle(lvl, customTitles),
+        };
+      }
 
-    if (profile.checkinStreak === 7) bonusCoins += CHECKIN_7DAY_BONUS;
-    if (profile.checkinStreak > 0 && profile.checkinStreak % 30 === 0) bonusCoins += CHECKIN_30DAY_BONUS;
+      const oldLevel = profile.level;
+      profile.checkinStreak = profile.lastCheckinDate === yesterday ? profile.checkinStreak + 1 : 1;
+      profile.lastCheckinDate = today;
 
-    profile.coins += coins + bonusCoins;
-    profile.xp += CHECKIN_XP;
-    profile.level = LevelService.calculateLevel(profile.xp);
+      let coins = CHECKIN_BASE_COINS;
+      let bonusCoins = 0;
 
-    await this.profileRepo.save(profile);
+      const streakBonus = Math.min(profile.checkinStreak * CHECKIN_STREAK_BONUS, CHECKIN_STREAK_MAX_BONUS);
+      coins += streakBonus;
 
-    return {
-      success: true,
-      coins,
-      streak: profile.checkinStreak,
-      bonusCoins,
-      xp: CHECKIN_XP,
-      totalCoins: profile.coins,
-    };
+      if (profile.checkinStreak === 7) bonusCoins += CHECKIN_7DAY_BONUS;
+      if (profile.checkinStreak > 0 && profile.checkinStreak % 30 === 0) bonusCoins += CHECKIN_30DAY_BONUS;
+
+      profile.coins += coins + bonusCoins;
+      profile.xp += CHECKIN_XP;
+      profile.level = LevelService.calculateLevel(profile.xp);
+
+      await repo.save(profile);
+
+      return {
+        success: true,
+        coins,
+        streak: profile.checkinStreak,
+        bonusCoins,
+        xp: CHECKIN_XP,
+        totalCoins: profile.coins,
+        leveledUp: profile.level > oldLevel,
+        newLevel: profile.level,
+        title: LevelService.getTitle(profile.level, customTitles),
+      };
+    });
   }
 
   // ── Leaderboard ──
 
   async getLeaderboard(groupId: string, limit: number = 10): Promise<UserGroupProfile[]> {
     return this.profileRepo.find({
-      where: { groupId },
+      where: { groupId, isActive: true },
       order: { xp: 'DESC' },
       take: limit,
     });
@@ -216,7 +273,7 @@ export class LevelService {
 
   async getCoinsLeaderboard(groupId: string, limit: number = 10): Promise<UserGroupProfile[]> {
     return this.profileRepo.find({
-      where: { groupId },
+      where: { groupId, isActive: true },
       order: { coins: 'DESC' },
       take: limit,
     });
@@ -228,7 +285,7 @@ export class LevelService {
 
     const count = await this.profileRepo
       .createQueryBuilder('p')
-      .where('p."groupId" = :groupId AND p.xp > :xp', { groupId, xp: profile.xp })
+      .where('p."groupId" = :groupId AND p."isActive" = true AND p.xp > :xp', { groupId, xp: profile.xp })
       .getCount();
 
     return count + 1;
@@ -240,10 +297,33 @@ export class LevelService {
 
     const count = await this.profileRepo
       .createQueryBuilder('p')
-      .where('p."groupId" = :groupId AND p.coins > :coins', { groupId, coins: profile.coins })
+      .where('p."groupId" = :groupId AND p."isActive" = true AND p.coins > :coins', { groupId, coins: profile.coins })
       .getCount();
 
     return count + 1;
+  }
+
+  /**
+   * Mark a member's profile inactive when they leave/are kicked/banned so they
+   * drop out of leaderboards. Idempotent; only affects existing rows.
+   */
+  async markInactive(userId: string, groupId: string): Promise<void> {
+    await this.profileRepo
+      .createQueryBuilder()
+      .update(UserGroupProfile)
+      .set({ isActive: false, leftAt: () => 'NOW()' })
+      .where('"userId" = :userId AND "groupId" = :groupId', { userId, groupId })
+      .execute();
+  }
+
+  /** Re-activate an existing profile when a former member rejoins. */
+  async reactivateProfile(userId: string, groupId: string): Promise<void> {
+    await this.profileRepo
+      .createQueryBuilder()
+      .update(UserGroupProfile)
+      .set({ isActive: true, leftAt: null })
+      .where('"userId" = :userId AND "groupId" = :groupId', { userId, groupId })
+      .execute();
   }
 
   // ── Coins ──

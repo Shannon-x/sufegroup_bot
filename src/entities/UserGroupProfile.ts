@@ -31,6 +31,14 @@ export class UserGroupProfile {
   @Column({ type: 'varchar', length: 20, nullable: true })
   lastCheckinDate: string | null; // YYYY-MM-DD
 
+  // Whether the member is still in the group. Inactive profiles are excluded
+  // from leaderboards/ranks so users who left/were kicked don't linger there.
+  @Column({ type: 'boolean', default: true })
+  isActive: boolean;
+
+  @Column({ type: 'timestamp', nullable: true })
+  leftAt: Date | null;
+
   @CreateDateColumn()
   createdAt: Date;
 

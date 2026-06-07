@@ -4,6 +4,7 @@ import { ContentFilterService, FilterConfig } from '../services/ContentFilterSer
 import { AuditService } from '../services/AuditService';
 import { Logger } from '../utils/logger';
 import { sendTemporaryMessage } from '../utils/telegram';
+import { buildMention, escapeHtml } from '../utils/markdown';
 
 export class ContentFilterHandler {
   private logger: Logger;
@@ -79,7 +80,7 @@ export class ContentFilterHandler {
   ): Promise<boolean> {
     const chatIdNum = Number(groupId);
     const userIdNum = Number(userId);
-    const reasonStr = reasons.join(', ');
+    const reasonStr = escapeHtml(reasons.join(', '));
 
     // Always delete the offending message
     try {
@@ -92,16 +93,13 @@ export class ContentFilterHandler {
     const violations = await this.contentFilterService.addViolation(groupId, userId);
     const action = this.contentFilterService.determineAction(violations, config);
 
-    // Get user display name
-    const firstName = ctx.from?.first_name || '用户';
-    const userMention = ctx.from?.username
-      ? `@${ctx.from.username}`
-      : `[${firstName}](tg://user?id=${userId})`;
+    // Get user display name (clickable HTML mention)
+    const userMention = buildMention(ctx.from, userId);
 
     switch (action) {
       case 'warn': {
         const warnText = `⚠️ ${userMention} 您的消息包含违禁内容已被删除（${reasonStr}）\n累计警告 ${violations}/${config.maxWarnings}，达到上限将被禁言`;
-        await sendTemporaryMessage(this.bot, chatIdNum, warnText, { parse_mode: 'Markdown' }, 15000);
+        await sendTemporaryMessage(this.bot, chatIdNum, warnText, { parse_mode: 'HTML' }, 15000);
         break;
       }
 
@@ -123,7 +121,7 @@ export class ContentFilterHandler {
         }
 
         const muteText = `🔇 ${userMention} 因发送违禁内容（${reasonStr}）已被禁言 ${config.muteDuration} 分钟`;
-        await sendTemporaryMessage(this.bot, chatIdNum, muteText, { parse_mode: 'Markdown' });
+        await sendTemporaryMessage(this.bot, chatIdNum, muteText, { parse_mode: 'HTML' });
         break;
       }
 
@@ -135,7 +133,7 @@ export class ContentFilterHandler {
         }
 
         const banText = `🚫 ${userMention} 因多次发送违禁内容（${reasonStr}）已被封禁`;
-        await sendTemporaryMessage(this.bot, chatIdNum, banText, { parse_mode: 'Markdown' });
+        await sendTemporaryMessage(this.bot, chatIdNum, banText, { parse_mode: 'HTML' });
         break;
       }
 

@@ -44,6 +44,22 @@ export class RedisService {
     await this.client.del(key);
   }
 
+  /**
+   * Atomically read and delete a key (Redis >= 6.2 GETDEL). Used to drain XP
+   * buffers without the lost-update window of a separate GET then DEL.
+   * Falls back to GET+DEL if GETDEL is unavailable.
+   */
+  async getAndDelete(key: string): Promise<string | null> {
+    try {
+      return await (this.client as unknown as { getdel(k: string): Promise<string | null> }).getdel(key);
+    } catch (err) {
+      this.logger.warn('GETDEL unavailable, falling back to GET+DEL', err);
+      const value = await this.client.get(key);
+      if (value !== null) await this.client.del(key);
+      return value;
+    }
+  }
+
   async exists(key: string): Promise<boolean> {
     const result = await this.client.exists(key);
     return result === 1;

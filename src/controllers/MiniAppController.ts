@@ -14,6 +14,7 @@ import { config } from '../config/config';
 import { TelegramBot } from '../services/TelegramBot';
 import { RateLimitMiddleware } from '../middleware/RateLimitMiddleware';
 import { sendTemporaryMessage, unrestrictUser, formatUserMention } from '../utils/telegram';
+import { buildMention, displayName, escapeHtml } from '../utils/markdown';
 
 // ── Request body schemas ──
 
@@ -266,15 +267,15 @@ export class MiniAppController {
 
       // Send group announcement
       try {
-        let text = `🎰 *新抽奖活动！*  #${lottery.id}\n\n`;
-        text += `🎁 奖品: *${cleanPrize}*\n`;
+        let text = `🎰 <b>新抽奖活动！</b>  #${lottery.id}\n\n`;
+        text += `🎁 奖品: <b>${escapeHtml(cleanPrize)}</b>\n`;
         text += `👥 中奖人数: ${cleanCount}\n`;
         text += `⏱ 时长: ${cleanDuration < 60 ? cleanDuration + '分钟' : (cleanDuration / 60) + '小时'}\n`;
         if (cleanLevel > 0) text += `📊 最低等级: Lv.${cleanLevel}\n`;
         if (cleanCoins > 0) text += `💰 参与费用: ${cleanCoins} 积分\n`;
-        text += `\n发送 \`/join ${lottery.id}\` 参与！`;
+        text += `\n发送 <code>/join ${lottery.id}</code> 参与！`;
 
-        const msg = await this.bot.getBot().api.sendMessage(groupId, text, { parse_mode: 'Markdown' });
+        const msg = await this.bot.getBot().api.sendMessage(groupId, text, { parse_mode: 'HTML' });
         lottery.messageId = msg.message_id;
         await this.levelService.saveLottery(lottery);
       } catch (e) {
@@ -318,15 +319,15 @@ export class MiniAppController {
         const winnerMentions = await Promise.all(
           winners.map(async (wId) => {
             const user = await this.userService.findById(wId);
-            return user?.username ? `@${user.username}` : (user?.firstName || `用户${wId}`);
+            return buildMention(user, wId);
           })
         );
-        let text = `🎉 *抽奖 #${lotteryId} 开奖！*\n\n`;
-        text += `🎁 奖品: *${lottery.prize}*\n`;
+        let text = `🎉 <b>抽奖 #${escapeHtml(lotteryId)} 开奖！</b>\n\n`;
+        text += `🎁 奖品: <b>${escapeHtml(lottery.prize)}</b>\n`;
         text += `👥 参与人数: ${lottery.participants.length}\n\n`;
-        text += `🏆 *中奖名单*\n`;
+        text += `🏆 <b>中奖名单</b>\n`;
         text += winnerMentions.map((m, i) => `${i + 1}. ${m}`).join('\n');
-        await this.bot.getBot().api.sendMessage(lottery.groupId, text, { parse_mode: 'Markdown' });
+        await this.bot.getBot().api.sendMessage(lottery.groupId, text, { parse_mode: 'HTML' });
       } catch (e) {
         this.logger.warn('Failed to send draw announcement', e);
       }
@@ -528,7 +529,7 @@ export class MiniAppController {
         await sendTemporaryMessage(
           this.bot.getBot(), chatId,
           `✅ ${userMention} 已成功通过验证，欢迎加入群组！`,
-          { parse_mode: 'Markdown' },
+          { parse_mode: 'HTML' },
         );
       } catch (error) {
         this.logger.error('Failed to send group notification', error);
@@ -580,7 +581,10 @@ export class MiniAppController {
       // Helper to map profiles to user infos
       const mapProfile = (p: any) => {
         const user = userMap.get(p.userId);
-        const name = String(user?.firstName || user?.username || p.userId);
+        // Unified resolution: full name → @username → "用户XXXX" placeholder.
+        // Never surface the raw numeric id (happens when the users table has no
+        // row for a member who only ever sent messages).
+        const name = displayName(user, p.userId);
         return {
           userId: p.userId,
           name,

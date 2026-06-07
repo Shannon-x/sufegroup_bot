@@ -12,6 +12,8 @@ import { LevelService } from '../services/LevelService';
 import { redisService } from '../services/RedisService';
 import { CommandHandler } from '../commands/CommandHandler';
 import { sendTemporaryMessage } from '../utils/telegram';
+import { buildMention, displayName, escapeHtml } from '../utils/markdown';
+import { isRealHumanSender } from '../utils/sender';
 import { FloodControlHandler } from '../handlers/FloodControlHandler';
 import { ContentFilterHandler } from '../handlers/ContentFilterHandler';
 import { MembershipHandler } from '../handlers/MembershipHandler';
@@ -74,7 +76,8 @@ export class TelegramBot {
     );
     this.membershipHandler = new MembershipHandler(
       this.bot, this.userService, this.groupService,
-      this.verificationService, this.auditService, this.contentFilterService
+      this.verificationService, this.auditService, this.contentFilterService,
+      this.levelService
     );
     this.privateChatHandler = new PrivateChatHandler(
       this.verificationService, this.groupService
@@ -191,26 +194,30 @@ export class TelegramBot {
           const filtered = await this.contentFilterHandler.handle(ctx, settings, isAdmin);
           if (filtered) return;
 
-          // 3. Award XP for legitimate messages
-          if (userId) {
+          // 3. Award XP — only for real human members. Bots, anonymous admins
+          //    (GroupAnonymousBot, first_name "Group") and channel/group
+          //    identity posts must never accrue XP or be announced as levelling
+          //    up, otherwise they create ghost profiles and broadcast "Group".
+          if (isRealHumanSender(ctx)) {
             try {
+              // Persist/refresh the sender's name. The XP path is the only place
+              // an already-present member is observed, and it never wrote the
+              // users table before — so leaderboards/broadcasts could not resolve
+              // a real name and fell back to the raw numeric id. Fire-and-forget.
+              this.userService.findOrCreate(ctx.from!).catch(() => {});
+
               const customTitles = settings?.customSettings?.customTitles || null;
               const result = await this.levelService.awardMessageXP(
-                userId.toString(),
+                userId!.toString(),
                 chatId,
                 customTitles
               );
               if (result?.leveledUp) {
-                await sendTemporaryMessage(
-                  this.bot,
-                  ctx.chat!.id,
-                  `🎉 恭喜 ${ctx.from!.first_name} 升级到 *Lv.${result.newLevel}*！\n称号: ${result.title}`,
-                  { parse_mode: 'Markdown' },
-                  15000
-                );
+                await this.announceLevelUp(ctx, result);
               }
-            } catch {
+            } catch (error) {
               // XP tracking failure should not block messages
+              this.logger.debug('XP tracking failed', error);
             }
           }
         } catch (error) {
@@ -237,6 +244,63 @@ export class TelegramBot {
     this.bot.catch((err) => {
       this.logger.error('Bot error', err);
     });
+  }
+
+  /**
+   * Announce a level-up. Renders a clickable HTML mention (so the member is
+   * pinged and can be tapped), replies to the triggering message, escapes all
+   * user-controlled text, throttles per group to avoid floods, and on any send
+   * failure logs + retries once as plain text instead of swallowing the error.
+   */
+  private async announceLevelUp(
+    ctx: MyContext,
+    result: { newLevel: number; title: string }
+  ) {
+    const chatId = ctx.chat!.id;
+
+    // Throttle: at most a few level-up messages per group per window so a burst
+    // of simultaneous level-ups can't flood the chat. XP is still awarded.
+    if (!(await this.canBroadcastLevelUp(chatId.toString()))) return;
+
+    const mention = buildMention(ctx.from!);
+    const text =
+      `🎉 恭喜 ${mention} 升级到 <b>Lv.${result.newLevel}</b>！\n` +
+      `称号: ${escapeHtml(result.title)}`;
+    const replyToMessageId = ctx.message?.message_id;
+
+    try {
+      await sendTemporaryMessage(
+        this.bot,
+        chatId,
+        text,
+        {
+          parse_mode: 'HTML',
+          ...(replyToMessageId
+            ? { reply_parameters: { message_id: replyToMessageId, allow_sending_without_reply: true } }
+            : {}),
+        },
+        30000
+      );
+    } catch (error) {
+      // Should be rare now that we use HTML + escaping, but never swallow it.
+      this.logger.warn('Level-up broadcast failed, retrying as plain text', error);
+      try {
+        const plain = `🎉 恭喜 ${displayName(ctx.from!)} 升级到 Lv.${result.newLevel}！称号: ${result.title}`;
+        await sendTemporaryMessage(this.bot, chatId, plain, {}, 30000);
+      } catch (retryError) {
+        this.logger.warn('Level-up plain-text fallback also failed', retryError);
+      }
+    }
+  }
+
+  /** Best-effort per-group throttle for level-up broadcasts (fail-open). */
+  private async canBroadcastLevelUp(chatId: string): Promise<boolean> {
+    try {
+      const count = await redisService.increment(`lvlup_rate:${chatId}`, 10);
+      return count <= 3; // ≤ 3 broadcasts per 10s window per group
+    } catch {
+      return true;
+    }
   }
 
   private async setBotCommands() {

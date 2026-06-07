@@ -229,7 +229,7 @@ export class VerificationService {
         bot,
         chatId,
         `⏰ ${userMention} 未在规定时间内完成验证，已被移除。`,
-        { parse_mode: 'Markdown' }
+        { parse_mode: 'HTML' }
       );
     } catch (error) {
       this.logger.error('Failed to send timeout notification', error);

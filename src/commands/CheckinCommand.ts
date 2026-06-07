@@ -3,6 +3,7 @@ import { BaseCommand } from './BaseCommand';
 import { MyContext } from '../services/TelegramBot';
 import { LevelService } from '../services/LevelService';
 import { sendTemporaryMessage } from '../utils/telegram';
+import { buildMention, escapeHtml } from '../utils/markdown';
 
 export class CheckinCommand extends BaseCommand {
   command = 'checkin';
@@ -32,7 +33,9 @@ export class CheckinCommand extends BaseCommand {
       // Ignore if no permission to delete
     }
 
-    const result = await this.levelService.checkin(userId, groupId);
+    const settings = await this.groupService.getSettings(groupId);
+    const customTitles = settings?.customSettings?.customTitles || null;
+    const result = await this.levelService.checkin(userId, groupId, customTitles);
 
     if (!result.success) {
       if (result.alreadyChecked) {
@@ -71,5 +74,18 @@ export class CheckinCommand extends BaseCommand {
       { parse_mode: 'Markdown' },
       30000
     );
+
+    // Check-in also grants XP, which can trigger a level-up. Announce it for
+    // parity with the message-XP path (previously the level changed silently).
+    if (result.leveledUp) {
+      const mention = buildMention(ctx.from);
+      await sendTemporaryMessage(
+        this.bot,
+        ctx.chat!.id,
+        `🎉 恭喜 ${mention} 升级到 <b>Lv.${result.newLevel}</b>！\n称号: ${escapeHtml(result.title)}`,
+        { parse_mode: 'HTML' },
+        30000
+      );
+    }
   }
 }
