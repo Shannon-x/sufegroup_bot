@@ -64,7 +64,25 @@ async function initVerification(sessionId, mode) {
       : '请完成人机验证以加入群组';
     document.getElementById('v-group-name').textContent = data.groupName;
     var fullName = data.userFirstName + (data.userLastName ? ' ' + data.userLastName : '');
-    document.getElementById('v-avatar').textContent = (data.userFirstName || '?').charAt(0).toUpperCase();
+    // NFKC-normalise (folds 𝒦/fancy Unicode → K) then take the first code point
+    // so surrogate pairs (fancy letters / emoji) aren't split into a broken glyph.
+    var _an = (data.userFirstName || '').normalize('NFKC').trim();
+    var _initial = Array.from(_an)[0];
+    _initial = _initial ? _initial.toUpperCase() : '?';
+    // Prefer the real Telegram profile photo (server-resolved data URI; or
+    // photo_url when Telegram provides it), else fall back to the initial.
+    var _tgUser = (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initDataUnsafe && window.Telegram.WebApp.initDataUnsafe.user) || {};
+    var _photo = data.avatarUrl || _tgUser.photo_url || '';
+    var _av = document.getElementById('v-avatar');
+    if (_photo) {
+      _av.textContent = '';
+      _av.classList.add('has-photo');
+      _av.style.backgroundImage = 'url("' + _photo + '")';
+    } else {
+      _av.classList.remove('has-photo');
+      _av.style.backgroundImage = '';
+      _av.textContent = _initial;
+    }
     document.getElementById('v-uname').textContent = fullName;
     document.getElementById('v-handle').textContent = data.username ? '@' + data.username : '';
     document.getElementById('v-user-section').style.display = 'flex';

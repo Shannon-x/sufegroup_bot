@@ -15,6 +15,8 @@ import { TelegramBot } from '../services/TelegramBot';
 import { RateLimitMiddleware } from '../middleware/RateLimitMiddleware';
 import { sendTemporaryMessage, unrestrictUser, formatUserMention } from '../utils/telegram';
 import { buildMention, displayName, escapeHtml } from '../utils/markdown';
+import { avatarInitial } from '../utils/avatar';
+import { getUserAvatarDataUrl } from '../utils/avatarPhoto';
 
 // ── Request body schemas ──
 
@@ -412,11 +414,16 @@ export class MiniAppController {
       const remainingMs = session.expiresAt.getTime() - Date.now();
       const remainingSeconds = Math.ceil(remainingMs / 1000);
 
+      // Real Telegram profile photo (cached, null if none/private → client falls
+      // back to the initial-letter avatar).
+      const avatarUrl = await getUserAvatarDataUrl(this.bot.getBot().api, userId);
+
       return reply.send({
         groupName: group?.title || '群组',
         userFirstName: user?.firstName || '',
         userLastName: user?.lastName || '',
         username: user?.username || '',
+        avatarUrl,
         ttlSeconds: remainingSeconds,
         siteKey: this.turnstileService.getSiteKey(),
         hcaptchaSiteKey: this.hcaptchaService.getSiteKey() || '',
@@ -589,7 +596,7 @@ export class MiniAppController {
           userId: p.userId,
           name,
           username: user?.username,
-          avatarChar: name.charAt(0).toUpperCase(),
+          avatarChar: avatarInitial(name.replace(/^@/, '')),
           level: p.level,
           xp: p.xp,
           coins: p.coins,

@@ -25,7 +25,11 @@
             <div class="card-body">
                 <!-- User info -->
                 <div class="user-row">
-                    <div class="user-avatar"><%= userFirstName.charAt(0).toUpperCase() %></div>
+                    <% if (avatarUrl) { %>
+                        <div class="user-avatar" style="background-image:url('<%= avatarUrl %>');background-size:cover;background-position:center"></div>
+                    <% } else { %>
+                        <div class="user-avatar"><%= avatarChar %></div>
+                    <% } %>
                     <div>
                         <div class="user-name"><%= userFirstName %><%= userLastName ? ' ' + userLastName : '' %></div>
                         <% if (username) { %>

@@ -176,7 +176,7 @@ body {
 .card-title {
   font-family: var(--font-display);
   font-size: 34px;
-  font-weight: 600;
+  font-weight: 700;
   line-height: 1.12;
   letter-spacing: -0.8px;
   color: var(--ink);

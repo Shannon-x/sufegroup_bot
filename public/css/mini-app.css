@@ -346,7 +346,7 @@ html[data-theme="light"] #toast { background: #252320; }
 }
 .verify-icon { font-size: 40px; margin-bottom: 8px; }
 .verify-title {
-  font-family: var(--font-display); font-size: 25px; font-weight: 600;
+  font-family: var(--font-display); font-size: 25px; font-weight: 700;
   letter-spacing: -0.4px; color: var(--text); margin-bottom: 4px;
 }
 .verify-sub { font-size: 13.5px; color: var(--text2); }
@@ -375,6 +375,9 @@ html[data-theme="light"] #toast { background: #252320; }
   background: linear-gradient(135deg, #cc785c 0%, #a9583e 100%);
   display: flex; align-items: center; justify-content: center;
   font-size: 18px; font-weight: 700; color: #fff; flex-shrink: 0;
+}
+.verify-avatar.has-photo {
+  background-size: cover; background-position: center; background-repeat: no-repeat;
 }
 .verify-uname { font-size: 15px; font-weight: 600; color: var(--text); }
 .verify-handle { font-size: 12.5px; color: var(--text3); margin-top: 2px; }

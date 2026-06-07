@@ -11,6 +11,8 @@ import { Logger } from '../utils/logger';
 import { config } from '../config/config';
 import { sendTemporaryMessage, kickUser, unrestrictUser, formatUserMention } from '../utils/telegram';
 import { escapeHtml } from '../utils/markdown';
+import { avatarInitial } from '../utils/avatar';
+import { getUserAvatarDataUrl } from '../utils/avatarPhoto';
 
 interface VerifyQuerystring {
   token: string;
@@ -112,6 +114,8 @@ export class VerificationController {
         const remainingMs = session.expiresAt.getTime() - Date.now();
         const remainingMinutes = Math.ceil(remainingMs / 60000);
 
+        const avatarUrl = await getUserAvatarDataUrl(this.bot.getBot().api, user.id);
+
         return reply.view('verify', {
           token,
           siteKey: this.turnstileService.getSiteKey(),
@@ -119,6 +123,8 @@ export class VerificationController {
           userFirstName: user.firstName,
           userLastName: user.lastName,
           username: user.username,
+          avatarChar: avatarInitial(user.firstName),
+          avatarUrl,
           ttlMinutes: remainingMinutes,
           botUsername
         });
