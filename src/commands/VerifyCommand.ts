@@ -2,6 +2,7 @@ import { CommandContext } from 'grammy';
 import { InlineKeyboard } from 'grammy';
 import { BaseCommand } from './BaseCommand';
 import { MyContext } from '../services/TelegramBot';
+import { escapeHtml } from '../utils/markdown';
 
 export class VerifyCommand extends BaseCommand {
   command = 'verify';
@@ -34,34 +35,41 @@ export class VerifyCommand extends BaseCommand {
               0,
               settings.ttlMinutes
             );
-            
-            const verifyUrl = this.verificationService.generateVerificationUrl(
-              userId,
-              groupId,
-              newSession.id
-            );
-            
+
+            // The member is already restricted (checked above), so the session
+            // truthfully reflects an applied restriction.
+            await this.verificationService
+              .markRestrictionApplied(newSession.id, true)
+              .catch((e) => this.logger.warn('Could not mark restriction applied', e));
+
+            const deepLink = this.buildVerificationDeepLink(newSession.id);
+            if (!deepLink) {
+              await ctx.reply('❌ 机器人未配置用户名（BOT_USERNAME），无法生成验证入口，请联系管理员', {
+                reply_to_message_id: ctx.message?.message_id
+              });
+              return;
+            }
+
             const keyboard = new InlineKeyboard()
-              .url('🔐 点击验证', verifyUrl);
-              
+              .url('🔐 点击验证', deepLink);
+
             await ctx.reply(
               `⚠️ 您需要完成验证才能在群组中发言\n\n` +
               `请点击下方按钮完成验证\n` +
               `验证有效期: ${settings.ttlMinutes} 分钟`,
               {
                 reply_markup: keyboard,
-                parse_mode: 'Markdown',
                 reply_to_message_id: ctx.message?.message_id
               }
             );
-            
+
             // Delete command message
             try {
               await ctx.deleteMessage();
             } catch (error) {
               // Ignore if can't delete
             }
-            
+
             return;
           }
         }
@@ -80,29 +88,35 @@ export class VerifyCommand extends BaseCommand {
         return;
       }
 
-      // Generate new verification URL
-      const verifyUrl = this.verificationService.generateVerificationUrl(
-        userId,
-        groupId,
-        session.id
-      );
+      // This reply goes to the *group*, so it may only carry an identity-bound
+      // link. generateVerificationUrl() mints a bearer token that completes the
+      // verification for whoever opens it — posting that (previously also in a
+      // <code> block, ready to copy) let any bystander verify on this user's
+      // behalf. The deep link below only names the session and is rejected for
+      // anyone but its owner.
+      const deepLink = this.buildVerificationDeepLink(session.id);
+      if (!deepLink) {
+        await ctx.reply('❌ 机器人未配置用户名（BOT_USERNAME），无法生成验证入口，请联系管理员', {
+          reply_to_message_id: ctx.message?.message_id
+        });
+        return;
+      }
 
       const keyboard = new InlineKeyboard()
-        .url('🔐 点击验证', verifyUrl);
+        .url('🔐 点击验证', deepLink);
 
-      await this.groupService.getSettings(groupId);
       const remainingMinutes = Math.ceil(
         (session.expiresAt.getTime() - Date.now()) / 60000
       );
 
       await ctx.reply(
-        `🔗 *验证链接*\n\n` +
+        `🔗 <b>验证链接</b>\n\n` +
         `请点击下方按钮完成验证\n` +
         `剩余时间: ${remainingMinutes} 分钟\n\n` +
-        `如果按钮无法点击，请复制此链接到浏览器:\n${verifyUrl}`,
+        `如果按钮无法点击，请复制此链接:\n<code>${escapeHtml(deepLink)}</code>`,
         {
           reply_markup: keyboard,
-          parse_mode: 'Markdown',
+          parse_mode: 'HTML',
           reply_to_message_id: ctx.message?.message_id
         }
       );

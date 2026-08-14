@@ -1,6 +1,7 @@
 import { CommandContext } from 'grammy';
 import { BaseCommand } from './BaseCommand';
 import { MyContext } from '../services/TelegramBot';
+import { escapeHtml } from '../utils/markdown';
 
 export class AuditCommand extends BaseCommand {
   command = 'audit';
@@ -37,7 +38,10 @@ export class AuditCommand extends BaseCommand {
         return;
       }
 
-      let message = `📋 *最近 ${logs.length} 条审计日志*\n\n`;
+      // HTML mode: log details carry attacker-controlled text (nicknames, ban
+      // reasons). Under Markdown those could forge links or make Telegram reject
+      // the whole report, which is exactly the audit trail admins need to read.
+      let message = `📋 <b>最近 ${logs.length} 条审计日志</b>\n\n`;
 
       for (const log of logs) {
         const time = new Date(log.createdAt).toLocaleString('zh-CN', {
@@ -47,7 +51,7 @@ export class AuditCommand extends BaseCommand {
           minute: '2-digit'
         });
 
-        message += `*${time}* - `;
+        message += `<b>${escapeHtml(time)}</b> - `;
 
         switch (log.action) {
           case 'user_joined':
@@ -93,28 +97,28 @@ export class AuditCommand extends BaseCommand {
             message += `💻 命令执行`;
             break;
           default:
-            message += log.action;
+            message += escapeHtml(log.action);
         }
 
         if (log.user) {
-          message += `\n  用户: ${log.user.firstName}`;
+          message += `\n  用户: ${escapeHtml(log.user.firstName)}`;
           if (log.user.username) {
-            message += ` (@${log.user.username})`;
+            message += ` (@${escapeHtml(log.user.username)})`;
           }
         }
 
         if (log.performedBy) {
           const performer = await this.userService.findById(log.performedBy);
           if (performer) {
-            message += `\n  操作者: ${performer.firstName}`;
+            message += `\n  操作者: ${escapeHtml(performer.firstName)}`;
             if (performer.username) {
-              message += ` (@${performer.username})`;
+              message += ` (@${escapeHtml(performer.username)})`;
             }
           }
         }
 
         if (log.details && log.action !== 'command_executed') {
-          message += `\n  详情: ${log.details}`;
+          message += `\n  详情: ${escapeHtml(log.details)}`;
         }
 
         message += '\n\n';
@@ -140,10 +144,10 @@ export class AuditCommand extends BaseCommand {
         }
 
         for (const msg of messages) {
-          await ctx.reply(msg, { parse_mode: 'Markdown' });
+          await ctx.reply(msg, { parse_mode: 'HTML' });
         }
       } else {
-        await ctx.reply(message, { parse_mode: 'Markdown' });
+        await ctx.reply(message, { parse_mode: 'HTML' });
       }
 
     } catch (error) {

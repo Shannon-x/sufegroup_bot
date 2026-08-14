@@ -23,6 +23,11 @@ import { RankCommand } from './RankCommand';
 import { LotteryCommand } from './LotteryCommand';
 import { AdminPanelCommand } from './AdminPanelCommand';
 import { TitleCommand } from './TitleCommand';
+import { WhitelistCommand } from './WhitelistCommand';
+import { BlacklistCommand } from './BlacklistCommand';
+import { VerifyCommand } from './VerifyCommand';
+import { ReverifyCommand } from './ReverifyCommand';
+import { AuditCommand } from './AuditCommand';
 
 export class CommandHandler {
   private commands: Map<string, any>;
@@ -59,6 +64,14 @@ export class CommandHandler {
       LotteryCommand,
       AdminPanelCommand,
       TitleCommand,
+      // Manual compensation channel for the join guard. These were implemented
+      // but never registered, so admins had no way to whitelist/blacklist a
+      // member or re-issue a verification link when the join flow misfired.
+      WhitelistCommand,
+      BlacklistCommand,
+      VerifyCommand,
+      ReverifyCommand,
+      AuditCommand,
     ];
 
     for (const CommandClass of commandClasses) {
@@ -91,7 +104,7 @@ export class CommandHandler {
           });
           
           if (userId && command) {
-            const allowed = await this.rateLimiter.commandLimit(userId, command);
+            const allowed = await this.isCommandAllowed(userId, command);
             if (!allowed) {
               await ctx.reply('⚠️ 命令使用过于频繁，请稍后再试');
               return;
@@ -116,5 +129,25 @@ export class CommandHandler {
 
   getCommands() {
     return Array.from(this.commands.values());
+  }
+
+  /**
+   * Rate limit a command without ever taking the middleware down with it.
+   *
+   * A throw here used to escape the middleware, so next() never ran and *every*
+   * slash command — including the admin recovery commands — silently stopped
+   * working. commandLimit() now owns the Redis-outage case itself (it degrades
+   * to a process-local counter instead of throwing), so this catch only covers
+   * an unexpected bug in the limiter. Rate limiting is flood protection rather
+   * than a security gate, so that case lets the command through and makes the
+   * bug loud, rather than duplicating a second counter that can never run.
+   */
+  private async isCommandAllowed(userId: string, command: string): Promise<boolean> {
+    try {
+      return await this.rateLimiter.commandLimit(userId, command);
+    } catch (error) {
+      this.logger.error('Command rate limiter threw unexpectedly; allowing the command', error);
+      return true;
+    }
   }
 }
