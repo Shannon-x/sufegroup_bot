@@ -156,6 +156,14 @@ async function restoreRestriction(bot: Bot<any>, chatId: number, userId: number)
 
 export type VerificationCommitResult =
   | { status: 'committed' }
+  /**
+   * The challenge was passed and the session is recorded as verified, but the
+   * mute could not be lifted. The member stays silent until an admin fixes the
+   * bot's permissions — recoverable, and strictly better than the alternative:
+   * refusing to commit left a verified human sitting in a `pending` session
+   * that the timeout scheduler then removed from the group.
+   */
+  | { status: 'committed_still_muted'; kind: RestrictionFailureKind }
   | { status: 'unrestrict_failed'; kind: RestrictionFailureKind }
   | { status: 'commit_lost'; rolledBack: boolean };
 
@@ -181,7 +189,26 @@ export async function unrestrictThenCommit(params: {
   const { bot, chatId, userId, commit } = params;
 
   const lifted = await liftRestriction(bot, chatId, userId);
-  if (!lifted.ok) return { status: 'unrestrict_failed', kind: lifted.kind };
+  if (!lifted.ok) {
+    // Record the verification anyway. The person in front of the challenge
+    // solved it; failing to unmute them is our problem, not theirs, and
+    // leaving the session `pending` handed them to the timeout scheduler,
+    // which removed them from the group for a permission fault on our side.
+    // Committing keeps them muted but safe, and the caller reports the truth.
+    let recorded = false;
+    try {
+      recorded = await commit();
+    } catch (error) {
+      logger.error('Verification commit threw after the restriction could not be lifted', {
+        chatId,
+        userId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    if (!recorded) return { status: 'unrestrict_failed', kind: lifted.kind };
+    return { status: 'committed_still_muted', kind: lifted.kind };
+  }
 
   let committed = false;
   try {
@@ -401,6 +428,25 @@ export async function handleFailedCommit(params: {
     return {
       statusCode: result.kind === 'transient' ? 503 : 500,
       message: unrestrictFailureMessage(result.kind),
+    };
+  }
+
+  if (result.status === 'committed_still_muted') {
+    await audit({
+      action: 'unrestrict_failed',
+      details: `Verification recorded but the restriction could not be lifted (${source}); reason=${result.kind}`,
+    });
+
+    if (result.kind === 'permission' && (await shouldAlertUnrestrictFailure(groupId, userId))) {
+      await announceUnrestrictFailure(bot, chatId, await mention());
+    }
+
+    // 200, not an error: the verification counted and the member will not be
+    // removed. Say plainly that speaking is still blocked so they wait for an
+    // admin rather than retrying a challenge they already passed.
+    return {
+      statusCode: 200,
+      message: '✅ 验证已通过，但机器人暂时无法解除您的发言限制，请等待管理员处理（您不会被移出群组）。',
     };
   }
 

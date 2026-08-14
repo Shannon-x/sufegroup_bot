@@ -126,6 +126,10 @@ export class VerificationController {
         return reply.view('verify', {
           token,
           siteKey: this.turnstileService.getSiteKey(),
+          // Binds the solved token to this session. Turnstile echoes cData back
+          // in the siteverify response, so a token solved for someone else's
+          // session and relayed here is rejected.
+          sessionId: session.id,
           groupName,
           userFirstName: user.firstName,
           userLastName: user.lastName,
@@ -226,10 +230,12 @@ export class VerificationController {
           result: turnstileResult,
           token: turnstileToken,
           sessionId: session.id,
-          // This page renders Turnstile implicitly from views/verify.ejs, which
-          // has no way to pass cData, so a missing binding is tolerated here
-          // (the Mini App path, whose widget always sets it, requires it).
-          requireCdata: false,
+          // views/verify.ejs renders Turnstile implicitly, and implicit
+          // rendering does accept data-cdata — the earlier claim that this page
+          // "has no way to pass cData" was simply wrong, and it left the
+          // binding switched off on the one endpoint an attacker can reach
+          // without a Telegram client.
+          requireCdata: true,
         });
 
         if (!assessment.ok) {

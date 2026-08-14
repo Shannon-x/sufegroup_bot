@@ -3,6 +3,7 @@ import { BaseCommand } from './BaseCommand';
 import { MyContext } from '../services/TelegramBot';
 import { GroupSettings } from '../entities/GroupSettings';
 import { escapeHtml } from '../utils/markdown';
+import { validateTelegramHtml } from '../utils/welcomeTemplate';
 
 export class SettingsCommand extends BaseCommand {
   command = 'settings';
@@ -13,19 +14,24 @@ export class SettingsCommand extends BaseCommand {
   }
 
   private async execute(ctx: CommandContext<MyContext>) {
-    // These settings switch join verification on/off and set its timeout, so a
-    // right-less "administrator" must not be able to reach them.
-    if (!await this.requireAdmin(ctx, ['can_change_info'])) return;
-
     const args = ctx.match?.toString().trim().split(/\s+/) || [];
     const subCommand = args[0]?.toLowerCase();
     const groupId = ctx.chat!.id.toString();
+
+    // Reading the configuration and changing it are different privileges.
+    // Requiring can_change_info for the whole command locked moderators out of
+    // simply *looking* at the settings — including the ones responsible for
+    // enforcing them. Only the mutating path needs the right.
+    if (!await this.requireAdmin(ctx)) return;
 
     switch (subCommand) {
       case 'show':
         await this.showSettings(ctx, groupId);
         break;
       case 'set':
+        // These settings switch join verification on/off and set its timeout,
+        // so a right-less "administrator" must not be able to reach them.
+        if (!await this.requireAdmin(ctx, ['can_change_info'])) return;
         await this.setSetting(ctx, groupId, args.slice(1));
         break;
       default:
@@ -124,7 +130,7 @@ export class SettingsCommand extends BaseCommand {
           // message (400 can't parse entities) — leaving new members muted with
           // no verification entry point. Validate here, where an admin can still
           // see and fix the mistake.
-          const htmlError = this.validateTelegramHtml(value);
+          const htmlError = validateTelegramHtml(value);
           if (htmlError) {
             await ctx.reply(
               `${htmlError}\n\n可用示例: <code>&lt;b&gt;粗体&lt;/b&gt; {user_name} {group_name} {ttl}</code>`,

@@ -6,7 +6,7 @@ import { VerificationService } from '../services/VerificationService';
 import { AuditService } from '../services/AuditService';
 import { Logger } from '../utils/logger';
 import { config } from '../config/config';
-import { escapeHtml } from '../utils/markdown';
+import { renderWelcomeTemplate, WelcomeTemplateValues } from '../utils/welcomeTemplate';
 
 /**
  * Telegram admin rights a command can demand on top of the plain
@@ -58,13 +58,6 @@ export type AdminCheck =
  * "can't parse entities", which for the welcome template means a muted newcomer
  * never receives their verification entry point.
  */
-const TELEGRAM_HTML_TAGS = new Set([
-  'b', 'strong', 'i', 'em', 'u', 'ins', 's', 'strike', 'del',
-  'span', 'tg-spoiler', 'a', 'code', 'pre', 'blockquote',
-]);
-
-/** `&` that does not open one of the entities Telegram understands. */
-const BARE_AMPERSAND = /&(?!(?:amp|lt|gt|quot|#\d{1,6}|#x[0-9a-fA-F]{1,6});)/;
 
 export abstract class BaseCommand {
   protected logger: Logger;
@@ -336,100 +329,18 @@ export abstract class BaseCommand {
    * means a muted newcomer with no verification entry point. Returns an error
    * message to show the admin, or null when the template is safe.
    */
-  protected validateTelegramHtml(text: string): string | null {
-    const tagPattern = /<\/?([a-zA-Z][a-zA-Z0-9-]*)((?:\s[^<>]*)?)>/g;
-    const stack: string[] = [];
-    let cursor = 0;
-    let match: RegExpExecArray | null;
-
-    const checkText = (chunk: string): string | null => {
-      if (chunk.includes('<') || chunk.includes('>')) {
-        return '❌ 模板里的 < 和 > 必须写成 &lt; 和 &gt;，否则 Telegram 会拒发整条消息';
-      }
-      if (BARE_AMPERSAND.test(chunk)) {
-        return '❌ 模板里的 & 必须写成 &amp;，否则 Telegram 会拒发整条消息';
-      }
-      return null;
-    };
-
-    while ((match = tagPattern.exec(text)) !== null) {
-      const textError = checkText(text.slice(cursor, match.index));
-      if (textError) return textError;
-      cursor = match.index + match[0].length;
-
-      const name = match[1].toLowerCase();
-      if (!TELEGRAM_HTML_TAGS.has(name)) {
-        return `❌ Telegram 不支持标签 <${name}>，可用: ${[...TELEGRAM_HTML_TAGS].join(' ')}`;
-      }
-
-      if (match[0].startsWith('</')) {
-        if (stack.pop() !== name) return `❌ HTML 标签闭合不匹配: </${name}>`;
-      } else {
-        // Only <a href> and <span class> carry attributes; anything else with
-        // attributes is rejected rather than guessed at.
-        const attrs = match[2].trim();
-        if (attrs) {
-          const attrError = this.validateTagAttributes(name, attrs);
-          if (attrError) return attrError;
-        }
-        stack.push(name);
-      }
-    }
-
-    const tailError = checkText(text.slice(cursor));
-    if (tailError) return tailError;
-    if (stack.length > 0) return `❌ HTML 标签未闭合: <${stack[stack.length - 1]}>`;
-
-    return null;
-  }
-
-  private validateTagAttributes(name: string, attrs: string): string | null {
-    if (name === 'a') {
-      const href = /^href="(https?:\/\/|tg:\/\/)[^"<>]*"$/.test(attrs);
-      return href ? null : '❌ <a> 标签只支持 href="http(s)://..." 或 href="tg://..."';
-    }
-    if (name === 'span') {
-      return attrs === 'class="tg-spoiler"' ? null : '❌ <span> 标签只支持 class="tg-spoiler"';
-    }
-    if (name === 'code' || name === 'pre') {
-      return /^class="language-[A-Za-z0-9+#._-]+"$/.test(attrs)
-        ? null
-        : '❌ <code>/<pre> 只支持 class="language-xxx"';
-    }
-    return `❌ 标签 <${name}> 不支持属性`;
-  }
-
   /**
-   * Fill a group's welcome template. Same placeholder contract and same
-   * fallback copy as the join path (MembershipHandler.renderWelcomeTemplate);
-   * `{ttl}` is seconds, `{ttl_minutes}` is minutes.
-   *
-   * Every substituted value is HTML-escaped because a display name is
-   * attacker-controlled. Templates stored before validation existed are escaped
-   * wholesale rather than sent as-is: a legacy template with a stray `<` would
-   * otherwise take the entire message down with a 400.
+   * Fill a group's welcome template. Delegates to the shared implementation so
+   * this and the join path cannot drift — they already had, rendering the same
+   * stored template differently depending on which one sent it.
    */
   protected renderWelcomeTemplate(
     template: string | undefined,
-    values: { userName: string; groupName: string; ttlMinutes: number }
+    values: WelcomeTemplateValues
   ): string {
-    const fallback =
-      `新成员【{user_name}】 你好！\n` +
-      `小菲欢迎您加入{group_name}\n` +
-      `您当前需要完成验证才能解除限制，验证有效时间不超过{ttl} 秒。\n` +
-      `过期会被踢出或封禁，请尽快。`;
-
-    let body = template && template.trim() ? template : fallback;
-    if (this.validateTelegramHtml(body)) {
-      this.logger.warn('Welcome template is not valid Telegram HTML; sending it as plain text');
-      body = escapeHtml(body);
-    }
-
-    return body
-      .replace(/\{user_name\}/g, escapeHtml(values.userName))
-      .replace(/\{group_name\}/g, escapeHtml(values.groupName))
-      .replace(/\{ttl\}/g, String(values.ttlMinutes * 60))
-      .replace(/\{ttl_minutes\}/g, String(values.ttlMinutes));
+    return renderWelcomeTemplate(template, values, (error) =>
+      this.logger.warn('Welcome template is not valid Telegram HTML; sending it as plain text', { error })
+    );
   }
 
   protected formatDuration(minutes?: number): string {

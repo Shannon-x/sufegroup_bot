@@ -12,6 +12,7 @@ import { Logger } from '../utils/logger';
 import { config } from '../config/config';
 import { escapeHtml } from '../utils/markdown';
 import { redisService } from '../services/RedisService';
+import { renderWelcomeTemplate } from '../utils/welcomeTemplate';
 
 export class MembershipHandler {
   private logger: Logger;
@@ -620,12 +621,10 @@ export class MembershipHandler {
   }
 
   /**
-   * Fill the group's welcome template. Every substituted value is HTML-escaped
-   * because the message is sent with parse_mode HTML and a display name is
-   * attacker-controlled — an unescaped `<a href>` in a nickname would otherwise
-   * render as a live link in the group's welcome text.
-   *
-   * `{ttl}` is expressed in seconds to match the wording of the shipped default.
+   * Fill the group's welcome template via the shared implementation. This used
+   * to be a second, subtly different copy: it escaped the stored template
+   * unconditionally, so a template an admin wrote with <b> rendered as bold
+   * through /reverify but as literal tags when someone actually joined.
    */
   private renderWelcomeTemplate(
     template: string | undefined,
@@ -633,25 +632,12 @@ export class MembershipHandler {
     group: { title: string },
     ttlMinutes: number
   ): string {
-    const fallback =
-      `新成员【{user_name}】 你好！\n` +
-      `小菲欢迎您加入{group_name}\n` +
-      `您当前需要完成验证才能解除限制，验证有效时间不超过{ttl} 秒。\n` +
-      `过期会被踢出或封禁，请尽快。`;
-
-    // The template body is escaped too, not just the substituted values. It is
-    // admin-supplied free text that /settings validates only for length, so a
-    // stray `<` or `&` would make sendMessage reject the whole message with a
-    // 400 — and a failed welcome means the newcomer sits muted with no way to
-    // verify. Escaping first, then substituting already-escaped values, keeps
-    // the message sendable whatever the admin typed.
-    const body = escapeHtml(template && template.trim() ? template : fallback);
-
-    return body
-      .replace(/\{user_name\}/g, escapeHtml(user.firstName))
-      .replace(/\{group_name\}/g, escapeHtml(group.title))
-      .replace(/\{ttl\}/g, String(ttlMinutes * 60))
-      .replace(/\{ttl_minutes\}/g, String(ttlMinutes));
+    return renderWelcomeTemplate(
+      template,
+      { userName: user.firstName, groupName: group.title, ttlMinutes },
+      (error) =>
+        this.logger.warn('Welcome template is not valid Telegram HTML; sending it as plain text', { error })
+    );
   }
 
   async handleBotStatusUpdate(ctx: MyContext) {

@@ -59,6 +59,28 @@
     showMsg('error', '人机验证失败，请刷新页面重试');
   };
 
+  /**
+   * Throw away the solved token and ask Turnstile for a fresh challenge.
+   *
+   * The server now redeems each token exactly once, so a token that has been
+   * submitted is spent whatever the outcome. Leaving it in place meant the
+   * "please retry" advice sent the same burnt token back and every retry failed
+   * with the same message — and on the legacy page that loop ends with the
+   * member being removed for running out of time.
+   */
+  function resetChallenge() {
+    turnstileToken = null;
+    submitBtn.disabled = true;
+    try {
+      if (window.turnstile && typeof window.turnstile.reset === 'function') {
+        window.turnstile.reset();
+      }
+    } catch (err) {
+      // Widget already gone or not ready; the disabled button still prevents a
+      // resubmit of the spent token.
+    }
+  }
+
   // ── Form submit ──
   var form = document.getElementById('verifyForm');
 
@@ -94,17 +116,19 @@
           }, 800);
         } else {
           showMsg('error', data.message);
-          submitBtn.disabled = false;
           submitBtn.classList.remove('loading');
-          submitBtn.textContent = '完成验证';
+          submitBtn.textContent = '重新验证';
+          resetChallenge();
         }
       })
       .catch(function () {
         clearTimeout(timer);
+        // The request may still have reached the server and spent the token, so
+        // a fresh challenge is required here too.
         showMsg('error', ctrl.signal.aborted ? '请求超时，请重试' : '网络错误，请重试');
-        submitBtn.disabled = false;
         submitBtn.classList.remove('loading');
-        submitBtn.textContent = '完成验证';
+        submitBtn.textContent = '重新验证';
+        resetChallenge();
       });
   });
 
