@@ -107,10 +107,11 @@ jobs:
 
       - run: npm ci
 
-      # 只审计生产依赖。阈值定在 high：已知的 3 个 high 需要 fastify v4→v5
-      # 迁移才能消除，迁移完成后应把阈值收紧到 moderate。
+      # 只审计生产依赖。fastify v5 迁移后生产依赖已清零，阈值收紧到 moderate
+      # ——留一档余量给新披露但尚无修复版的低危公告，避免 CI 因不可行动的
+      # 告警而长期变红。
       - name: npm audit（生产依赖）
-        run: npm audit --omit=dev --audit-level=high
+        run: npm audit --omit=dev --audit-level=moderate
 
   secrets:
     name: 密钥扫描
