@@ -4,6 +4,13 @@ export class InitialSchema1706000000000 implements MigrationInterface {
     name = 'InitialSchema1706000000000'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // join_sessions defaults its PK to a generated UUID. This previously
+        // called uuid_generate_v4() without ensuring uuid-ossp existed, so a
+        // fresh database failed this migration outright. pgcrypto ships with
+        // Postgres and is what the later Chatwoot migration already uses, so
+        // standardise on gen_random_uuid().
+        await queryRunner.query(`CREATE EXTENSION IF NOT EXISTS "pgcrypto"`);
+
         // Create users table
         await queryRunner.query(`
             CREATE TABLE "users" (
@@ -65,7 +72,7 @@ export class InitialSchema1706000000000 implements MigrationInterface {
         `);
         await queryRunner.query(`
             CREATE TABLE "join_sessions" (
-                "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+                "id" uuid NOT NULL DEFAULT gen_random_uuid(),
                 "userId" bigint NOT NULL,
                 "groupId" bigint NOT NULL,
                 "status" "public"."join_sessions_status_enum" NOT NULL DEFAULT 'pending',

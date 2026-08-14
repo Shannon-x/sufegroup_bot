@@ -1,13 +1,5 @@
 import 'reflect-metadata';
-import Fastify from 'fastify';
-import fastifyView from '@fastify/view';
-import fastifyStatic from '@fastify/static';
-import fastifyCors from '@fastify/cors';
-import fastifyHelmet from '@fastify/helmet';
-import fastifyCookie from '@fastify/cookie';
-import fastifyRateLimit from '@fastify/rate-limit';
-import ejs from 'ejs';
-import path from 'path';
+import { createHttpServer } from './server';
 import { AppDataSource } from './config/database';
 import { config } from './config/config';
 import { Logger } from './utils/logger';
@@ -23,8 +15,31 @@ import { WebhookSignatureVerifier } from './middleware/WebhookSignatureVerifier'
 import { LogSanitizer } from './utils/LogSanitizer';
 import { redisService } from './services/RedisService';
 
+const DB_CONNECT_ATTEMPTS = 10;
+const DB_CONNECT_BASE_DELAY_MS = 1000;
+
+async function connectWithRetry(logger: Logger): Promise<void> {
+  for (let attempt = 1; attempt <= DB_CONNECT_ATTEMPTS; attempt++) {
+    try {
+      await AppDataSource.initialize();
+      return;
+    } catch (error) {
+      if (attempt === DB_CONNECT_ATTEMPTS) throw error;
+      const delay = Math.min(DB_CONNECT_BASE_DELAY_MS * 2 ** (attempt - 1), 15000);
+      logger.warn(
+        `Database connection attempt ${attempt}/${DB_CONNECT_ATTEMPTS} failed, retrying in ${delay}ms`
+      );
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
 async function bootstrap() {
   const logger = new Logger('Main');
+
+  // Flipped once the bot is polling/receiving updates. Readiness reports false
+  // until then so an orchestrator never routes traffic to a half-started bot.
+  let botStarted = false;
 
   // M-11: warn (don't fail) when HMAC_SECRET isn't set independently — it falls
   // back to JWT_SECRET, which still works but is weaker isolation in production.
@@ -33,86 +48,37 @@ async function bootstrap() {
   }
 
   try {
-    // Initialize database
+    // Initialize database. Retried with backoff because an orchestrator commonly
+    // starts the app before Postgres finishes accepting connections; a single
+    // attempt turned that race into a crash loop.
     logger.info('Connecting to database...');
-    await AppDataSource.initialize();
+    await connectWithRetry(logger);
     logger.info('Database connected');
 
-    // Run migrations automatically on startup
-    logger.info('Running database migrations...');
-    try {
-      await AppDataSource.runMigrations();
-      logger.info('Database migrations completed successfully');
-    } catch (migrationError) {
-      logger.error('Migration error', migrationError);
-      // Continue startup even if migrations fail (they might already be applied)
-      logger.warn('Continuing with startup despite migration error');
+    // A misresolved migrations glob makes runMigrations() a silent no-op, which
+    // leaves the app talking to an unmigrated schema. Catch it here instead.
+    if (AppDataSource.migrations.length === 0) {
+      throw new Error(
+        'No migrations were discovered. Check the migrations glob in src/config/database.ts ' +
+          'and that the project has been built.'
+      );
     }
 
-    // Initialize Fastify
-    const fastify = Fastify({
-      logger: false,
-      trustProxy: true,
-      bodyLimit: 10240, // 10KB limit for webhook payloads
-    });
+    // Run migrations automatically on startup.
+    //
+    // This is deliberately fatal. runMigrations() is idempotent — TypeORM skips
+    // migrations already recorded in the `migrations` table — so a failure here
+    // never means "already applied", it means the schema is genuinely broken.
+    // Starting anyway produced the worst possible failure mode: a container that
+    // reports healthy and a bot that appears online while every join-guard write
+    // (sessions, restrictions, audit) silently errors out.
+    logger.info('Running database migrations...');
+    await AppDataSource.runMigrations();
+    logger.info('Database migrations completed successfully');
 
-    // Register plugins
-    await fastify.register(fastifyHelmet, {
-      contentSecurityPolicy: {
-        directives: {
-          defaultSrc: ["'self'"],
-          scriptSrc: ["'self'", "'unsafe-inline'", 'https://challenges.cloudflare.com', 'https://telegram.org', 'https://js.hcaptcha.com', 'https://newassets.hcaptcha.com'],
-          // No inline event handlers in our markup (all bound via addEventListener),
-          // so block inline event-handler attributes to shrink the XSS surface.
-          scriptSrcAttr: ["'none'"],
-          styleSrc: ["'self'", "'unsafe-inline'", 'https://newassets.hcaptcha.com'],
-          frameSrc: ['https://challenges.cloudflare.com', 'https://newassets.hcaptcha.com'],
-          connectSrc: ["'self'", 'https://challenges.cloudflare.com', 'https://telegram.org', 'https://api.hcaptcha.com', 'https://newassets.hcaptcha.com'],
-          imgSrc: ["'self'", 'data:', 'https:'],
-          fontSrc: ["'self'", 'https:', 'data:'],
-          objectSrc: ["'none'"],
-          mediaSrc: ["'self'"],
-          childSrc: ["'none'"],
-          // Allow Telegram clients to embed Mini App
-          frameAncestors: ['https://web.telegram.org', 'https://desktop.telegram.org', 'https://ss.telegram.org', 'https://k.telegram.org'],
-        },
-      },
-      crossOriginEmbedderPolicy: false,
-      // Disable X-Frame-Options so frame-ancestors CSP takes effect for Telegram embedding
-      xFrameOptions: false,
-      hsts: {
-        maxAge: 31536000,
-        includeSubDomains: true,
-        preload: true
-      },
-      noSniff: true,
-      originAgentCluster: true,
-      permittedCrossDomainPolicies: false,
-      referrerPolicy: { policy: "no-referrer" },
-      xssFilter: true,
-    });
-
-    await fastify.register(fastifyCors, {
-      origin: false,
-    });
-
-    await fastify.register(fastifyCookie);
-
-    await fastify.register(fastifyRateLimit, {
-      global: false, // We'll use custom rate limiting
-    });
-
-    await fastify.register(fastifyStatic, {
-      root: path.join(__dirname, '..', 'public'),
-      prefix: '/',
-    });
-
-    await fastify.register(fastifyView, {
-      engine: {
-        ejs,
-      },
-      root: path.join(__dirname, '..', 'views'),
-    });
+    // HTTP stack lives in server.ts so its plugin configuration is testable
+    // without a database, Redis or a Telegram connection.
+    const fastify = await createHttpServer();
 
     // Initialize bot
     logger.info('Initializing Telegram bot...');
@@ -172,10 +138,42 @@ async function bootstrap() {
       });
     }
 
-    // Health check endpoint
-    fastify.get('/health', async (request, reply) => {
+    // Liveness: the process is up and the event loop is responsive. Never
+    // touches dependencies — a restart would not fix a dependency outage.
+    fastify.get('/live', async (_request, reply) => {
       reply.send({
         status: 'ok',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime(),
+      });
+    });
+
+    // Readiness. docker-compose's healthcheck points here, so it must actually
+    // verify the dependencies the join guard needs. Previously this returned a
+    // hardcoded `ok`, which let a fully non-functional deployment look healthy.
+    fastify.get('/health', async (_request, reply) => {
+      const [dbOk, redisOk] = await Promise.all([
+        AppDataSource.query('SELECT 1').then(
+          () => true,
+          (err) => {
+            logger.warn('Health check: database unreachable', err);
+            return false;
+          }
+        ),
+        redisService.ping(),
+      ]);
+
+      const pendingMigrations = await AppDataSource.showMigrations().catch(() => true);
+      const ready = dbOk && redisOk && !pendingMigrations && botStarted;
+
+      reply.code(ready ? 200 : 503).send({
+        status: ready ? 'ok' : 'degraded',
+        checks: {
+          database: dbOk,
+          redis: redisOk,
+          migrations: pendingMigrations ? 'pending' : 'applied',
+          bot: botStarted,
+        },
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
       });
@@ -195,6 +193,7 @@ async function bootstrap() {
 
     // Start bot
     await bot.start();
+    botStarted = true;
     logger.info('Bot started successfully');
 
     // Graceful shutdown
@@ -224,5 +223,21 @@ async function bootstrap() {
   }
 }
 
+// A rejected promise that nothing awaits used to vanish silently, leaving the
+// bot running in an unknown state. Surface these loudly; an unhandled exception
+// means the process state is no longer trustworthy, so exit and let the
+// orchestrator restart into a clean one.
+process.on('unhandledRejection', (reason) => {
+  new Logger('Main').error('Unhandled promise rejection', reason);
+});
+
+process.on('uncaughtException', (error) => {
+  new Logger('Main').error('Uncaught exception, exiting', error);
+  process.exit(1);
+});
+
 // Start application
-bootstrap();
+bootstrap().catch((error) => {
+  new Logger('Main').error('Fatal bootstrap error', error);
+  process.exit(1);
+});
