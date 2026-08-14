@@ -5,6 +5,7 @@ import { MyContext } from '../services/TelegramBot';
 import { ContentFilterService } from '../services/ContentFilterService';
 import { LevelService } from '../services/LevelService';
 import { config } from '../config/config';
+import { escapeHtml } from '../utils/markdown';
 
 /**
  * Admin panel with inline keyboard buttons.
@@ -25,19 +26,26 @@ export class AdminPanelCommand extends BaseCommand {
     this.bot.command(this.command, async (ctx) => this.showMainMenu(ctx));
 
     // Handle all admin panel callback queries
-    this.bot.on('callback_query:data', async (ctx) => {
+    this.bot.on('callback_query:data', async (ctx, next) => {
       const data = ctx.callbackQuery.data;
-      if (!data.startsWith('ap:')) return;
+      // Not ours — hand the update on, otherwise this handler swallows every
+      // other callback query registered after it.
+      if (!data.startsWith('ap:')) return next();
 
       // Verify admin
       const chatId = ctx.callbackQuery.message?.chat?.id;
-      if (!chatId) return;
+      if (!chatId) return next();
 
       const userId = ctx.from.id;
       try {
         const member = await ctx.api.getChatMember(chatId, userId);
-        if (member.status !== 'administrator' && member.status !== 'creator') {
-          await ctx.answerCallbackQuery({ text: '❌ 需要管理员权限', show_alert: true });
+        // The panel toggles join verification and the verification TTL, so it
+        // needs the same right as /settings — plain administrator status is not
+        // enough (Telegram allows admins with zero rights).
+        const allowed = member.status === 'creator'
+          || (member.status === 'administrator' && member.can_change_info === true);
+        if (!allowed) {
+          await ctx.answerCallbackQuery({ text: '❌ 需要「更改群组信息」管理员权限', show_alert: true });
           return;
         }
       } catch {
@@ -73,7 +81,7 @@ export class AdminPanelCommand extends BaseCommand {
       return;
     }
 
-    if (!await this.requireAdmin(ctx)) return;
+    if (!await this.requireAdmin(ctx, ['can_change_info'])) return;
 
     const groupId = ctx.chat!.id.toString();
     // Ensure group exists in DB before getting settings
@@ -103,8 +111,8 @@ export class AdminPanelCommand extends BaseCommand {
       keyboard.url('📱 Mini App（私聊打开）', `https://t.me/${config.bot.username}`);
     }
 
-    await ctx.reply('⚙️ *管理面板*\n\n点击按钮快速切换设置：', {
-      parse_mode: 'Markdown',
+    await ctx.reply('⚙️ <b>管理面板</b>\n\n点击按钮快速切换设置：', {
+      parse_mode: 'HTML',
       reply_markup: keyboard,
     });
   }
@@ -146,8 +154,8 @@ export class AdminPanelCommand extends BaseCommand {
         .text('15 分钟', 'ap:set_ttl_15').text('30 分钟', 'ap:set_ttl_30').row()
         .text('◀ 返回', 'ap:back');
 
-      await ctx.editMessageText(`⏱ *验证时长设置*\n\n当前: ${settings.ttlMinutes} 分钟\n\n选择新的验证超时时间:`, {
-        parse_mode: 'Markdown',
+      await ctx.editMessageText(`⏱ <b>验证时长设置</b>\n\n当前: ${settings.ttlMinutes} 分钟\n\n选择新的验证超时时间:`, {
+        parse_mode: 'HTML',
         reply_markup: keyboard,
       });
       await ctx.answerCallbackQuery();
@@ -173,8 +181,8 @@ export class AdminPanelCommand extends BaseCommand {
         .text(`警告上限: ${filterConfig.maxWarnings}`, 'ap:ft_warn').row()
         .text('◀ 返回', 'ap:back');
 
-      await ctx.editMessageText('🛡 *内容过滤设置*\n\n点击切换开关:', {
-        parse_mode: 'Markdown',
+      await ctx.editMessageText('🛡 <b>内容过滤设置</b>\n\n点击切换开关:', {
+        parse_mode: 'HTML',
         reply_markup: keyboard,
       });
       await ctx.answerCallbackQuery();
@@ -212,8 +220,8 @@ export class AdminPanelCommand extends BaseCommand {
         .text(`禁言: ${f.muteDuration}分钟`, 'ap:flood_mute').row()
         .text('◀ 返回', 'ap:back');
 
-      await ctx.editMessageText('🌊 *防刷屏设置*\n\n点击调整:', {
-        parse_mode: 'Markdown',
+      await ctx.editMessageText('🌊 <b>防刷屏设置</b>\n\n点击调整:', {
+        parse_mode: 'HTML',
         reply_markup: keyboard,
       });
       await ctx.answerCallbackQuery();
@@ -258,15 +266,18 @@ export class AdminPanelCommand extends BaseCommand {
       const customTitles = customSettings.customTitles as Array<{minLevel: number; title: string}> | undefined;
       const titles = customTitles && customTitles.length > 0 ? customTitles : LevelService.getDefaultTitles();
 
-      let text = '🏷 *自定义等级称号*\n\n';
-      text += titles.map(t => `Lv.${t.minLevel}+ → ${t.title}`).join('\n');
-      text += '\n\n发送 `/title <等级> <称号>` 设置\n发送 `/title reset` 恢复默认';
+      // Custom titles are admin-supplied free text; unescaped they used to be
+      // injected straight into a Markdown message, where a stray `*` or `_`
+      // made Telegram reject the whole panel.
+      let text = '🏷 <b>自定义等级称号</b>\n\n';
+      text += titles.map(t => `Lv.${t.minLevel}+ → ${escapeHtml(t.title)}`).join('\n');
+      text += '\n\n发送 <code>/title &lt;等级&gt; &lt;称号&gt;</code> 设置\n发送 <code>/title reset</code> 恢复默认';
 
       const keyboard = new InlineKeyboard()
         .text('恢复默认称号', 'ap:reset_titles').row()
         .text('◀ 返回', 'ap:back');
 
-      await ctx.editMessageText(text, { parse_mode: 'Markdown', reply_markup: keyboard });
+      await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: keyboard });
       await ctx.answerCallbackQuery();
       return;
     }
@@ -283,14 +294,14 @@ export class AdminPanelCommand extends BaseCommand {
     // ── Stats ──
     if (action === 'show_stats') {
       const stats = await this.auditService.getVerificationStats(groupId, 7);
-      let text = `📊 *群组统计 (近7天)*\n\n`;
+      let text = `📊 <b>群组统计 (近7天)</b>\n\n`;
       text += `新成员: ${stats.total}\n`;
       text += `已验证: ${stats.verified}\n`;
       text += `验证率: ${stats.rate.toFixed(1)}%`;
 
       await ctx.answerCallbackQuery();
       await ctx.editMessageText(text, {
-        parse_mode: 'Markdown',
+        parse_mode: 'HTML',
         reply_markup: new InlineKeyboard().text('◀ 返回', 'ap:back'),
       });
       return;
@@ -327,8 +338,8 @@ export class AdminPanelCommand extends BaseCommand {
     }
 
     try {
-      await ctx.editMessageText('⚙️ *管理面板*\n\n点击按钮快速切换设置：', {
-        parse_mode: 'Markdown',
+      await ctx.editMessageText('⚙️ <b>管理面板</b>\n\n点击按钮快速切换设置：', {
+        parse_mode: 'HTML',
         reply_markup: keyboard,
       });
     } catch {

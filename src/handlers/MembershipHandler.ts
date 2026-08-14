@@ -11,6 +11,8 @@ import { LevelService } from '../services/LevelService';
 import { Logger } from '../utils/logger';
 import { config } from '../config/config';
 import { escapeHtml } from '../utils/markdown';
+import { redisService } from '../services/RedisService';
+import { renderWelcomeTemplate } from '../utils/welcomeTemplate';
 
 export class MembershipHandler {
   private logger: Logger;
@@ -69,8 +71,23 @@ export class MembershipHandler {
       return;
     }
 
-    // Check if user is restricted and needs re-verification
+    // Check if user is restricted and needs re-verification.
+    //
+    // Only act when the bot itself applied the restriction. When a human admin
+    // mutes someone, `from` is that admin — and starting a verification flow
+    // there turned every manual mute into a self-service unmute: the muted user
+    // solved a captcha and the bot lifted the admin's punishment for them.
     if (old_chat_member.status === 'restricted' && new_chat_member.status === 'restricted') {
+      const restrictedByBot = update.from?.id === ctx.me.id;
+      if (!restrictedByBot) {
+        this.logger.debug('Restriction applied by an admin, not starting verification', {
+          userId: new_chat_member.user.id,
+          chatId: chat.id,
+          by: update.from?.id,
+        });
+        return;
+      }
+
       const memberId = new_chat_member.user.id.toString();
       const groupId = chat.id.toString();
       const pendingSession = await this.verificationService.getPendingSession(memberId, groupId);
@@ -179,123 +196,311 @@ export class MembershipHandler {
     }
   }
 
+  /**
+   * Handle a member joining.
+   *
+   * Ordering here is load-bearing. Everything that is not required to decide
+   * "should this user be muted?" now runs *after* the mute, and only in a
+   * best-effort wrapper. The previous version wrote the join timestamp to Redis
+   * and an audit row to Postgres before restricting anyone, so a single Redis
+   * hiccup threw straight to the outer catch and the member was never
+   * restricted, never given a session, and never verified — they simply walked
+   * in. Any unexpected failure now falls back to muting the newcomer rather
+   * than letting them through.
+   */
   async processNewMember(ctx: MyContext, telegramUser: any, chat: any) {
+    const userId = telegramUser.id.toString();
+    const chatId = chat.id.toString();
+    const lockKey = `${userId}-${chatId}`;
+
+    if (this.processingUsers.has(lockKey)) {
+      this.logger.debug('User is already being processed, skipping', { userId, chatId });
+      return;
+    }
+    this.processingUsers.add(lockKey);
+
+    // Cross-instance guard on top of the in-process Set, which only ever
+    // deduplicated within a single replica. Telegram can deliver the same join
+    // as both a chat_member update and a new_chat_members message, and with
+    // several replicas each would process it independently. acquireLock is
+    // fail-open, so a Redis outage simply degrades to the in-process behaviour.
+    const redisLockKey = `lock:join:${lockKey}`;
+    const gotRedisLock = await redisService.acquireLock(redisLockKey, 30);
+    if (!gotRedisLock) {
+      this.logger.debug('Another instance is processing this join, skipping', { userId, chatId });
+      this.processingUsers.delete(lockKey);
+      return;
+    }
+
     try {
-      // Skip bots
+      // Identity and settings are the only prerequisites for the mute decision.
+      const user = await this.userService.findOrCreate(telegramUser);
+      const { group, settings } = await this.groupService.findOrCreate(chat);
+
+      // Genuine Telegram bots cannot solve a captcha, so verification does not
+      // apply — but this is no longer a silent return. Bots added by ordinary
+      // members are a common spam vector, so the event is audited and visible.
       if (telegramUser.is_bot) {
-        this.logger.debug(`Bot ${telegramUser.id} joined, skipping verification`);
-        return;
-      }
-
-      // Prevent concurrent processing
-      const userId = telegramUser.id.toString();
-      const chatId = chat.id.toString();
-      const lockKey = `${userId}-${chatId}`;
-
-      if (this.processingUsers.has(lockKey)) {
-        this.logger.debug('User is already being processed, skipping', { userId, chatId });
-        return;
-      }
-
-      this.processingUsers.add(lockKey);
-
-      try {
-        // Get or create user and group
-        const user = await this.userService.findOrCreate(telegramUser);
-        const { group, settings } = await this.groupService.findOrCreate(chat);
-
-        // A former member rejoining: revive their existing profile so prior
-        // XP/level/coins reappear on the leaderboard (no-op if none exists).
-        await this.levelService
-          .reactivateProfile(user.id, group.id)
-          .catch((e) => this.logger.debug('reactivateProfile failed', e));
-
-        // Record join time for content filter's newUserLinkDelay
-        await this.contentFilterService.recordUserJoinTime(group.id, user.id);
-
-        // Log join event
-        await this.auditService.log({
-          groupId: group.id,
-          userId: user.id,
-          action: 'user_joined',
-          details: `User @${user.username || user.firstName} joined the group`
+        this.logger.info('Bot joined group, verification not applicable', {
+          botId: userId,
+          groupId: chatId,
         });
-
-        if (!settings.verificationEnabled) {
-          this.logger.debug(`Verification disabled for group ${group.id}`);
-          return;
-        }
-
-        // Check blacklist
-        if (await this.verificationService.isBlacklisted(user.id, group.id)) {
-          await ctx.api.banChatMember(Number(group.id), Number(user.id));
-          await this.auditService.log({
+        await this.bestEffort('audit bot join', () =>
+          this.auditService.log({
             groupId: group.id,
             userId: user.id,
-            action: 'user_kicked',
-            details: 'User is blacklisted'
-          });
-          return;
-        }
+            action: 'bot_joined',
+            details: `Bot @${user.username || user.firstName} was added to the group`,
+          })
+        );
+        return;
+      }
 
-        // Check if admin and admin bypass is enabled
-        if (settings.adminBypassVerification) {
-          const member = await ctx.api.getChatMember(Number(group.id), Number(user.id));
-          if (member.status === 'administrator' || member.status === 'creator') {
-            await this.auditService.log({
+      if (!settings.verificationEnabled) {
+        this.logger.debug(`Verification disabled for group ${group.id}`);
+        await this.recordJoinBookkeeping(user, group);
+        return;
+      }
+
+      // Blacklist: ban outright. A failed ban must not look like a success.
+      if (await this.verificationService.isBlacklisted(user.id, group.id)) {
+        try {
+          await ctx.api.banChatMember(Number(group.id), Number(user.id));
+          await this.bestEffort('audit blacklist ban', () =>
+            this.auditService.log({
+              groupId: group.id,
+              userId: user.id,
+              action: 'user_kicked',
+              details: 'User is blacklisted',
+            })
+          );
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          this.logger.error('Failed to ban blacklisted user', { userId: user.id, reason });
+          await this.handleRestrictionFailure(ctx, user, group, `封禁黑名单用户失败: ${reason}`);
+        }
+        return;
+      }
+
+      // Whitelist: trusted members skip verification. This check existed in
+      // VerificationService but was never wired into the join path, so
+      // whitelisted users were still muted and challenged like everyone else.
+      if (await this.verificationService.isWhitelisted(user.id, group.id)) {
+        this.logger.info('Whitelisted user joined, skipping verification', {
+          userId: user.id,
+          groupId: group.id,
+        });
+        await this.bestEffort('audit whitelist bypass', () =>
+          this.auditService.log({
+            groupId: group.id,
+            userId: user.id,
+            action: 'user_verified',
+            details: 'Whitelist bypass',
+          })
+        );
+        await this.recordJoinBookkeeping(user, group);
+        return;
+      }
+
+      if (settings.adminBypassVerification) {
+        // A failure to read admin status must not grant the bypass.
+        const isAdmin = await ctx.api
+          .getChatMember(Number(group.id), Number(user.id))
+          .then((m) => m.status === 'administrator' || m.status === 'creator')
+          .catch((e) => {
+            this.logger.warn('Could not read admin status, treating as non-admin', e);
+            return false;
+          });
+
+        if (isAdmin) {
+          await this.bestEffort('audit admin bypass', () =>
+            this.auditService.log({
               groupId: group.id,
               userId: user.id,
               action: 'user_verified',
-              details: 'Admin bypass'
-            });
-            return;
-          }
+              details: 'Admin bypass',
+            })
+          );
+          await this.recordJoinBookkeeping(user, group);
+          return;
         }
-
-        // Apply initial restrictions
-        await this.applyRestrictions(ctx, group.id, user.id);
-
-        // Cancel existing pending session
-        const existingSession = await this.verificationService.getPendingSession(user.id, group.id);
-        if (existingSession) {
-          this.logger.info('Cancelling existing session for user', {
-            userId: user.id,
-            sessionId: existingSession.id
-          });
-          await this.verificationService.cancelSession(existingSession.id);
-        }
-
-        // Create verification session
-        const session = await this.verificationService.createSession(
-          user.id,
-          group.id,
-          0,
-          settings.ttlMinutes
-        );
-
-        // Send welcome message
-        const welcomeMsg = await this.sendWelcomeMessage(ctx, user, group, settings, session.id);
-        if (welcomeMsg) {
-          await this.verificationService.updateSessionMessageId(session.id, welcomeMsg.message_id);
-        }
-        // Note: timeout is handled by SchedulerService's periodic cleanup,
-        // no per-session setTimeout needed.
-
-      } finally {
-        setTimeout(() => {
-          this.processingUsers.delete(lockKey);
-        }, 3000);
       }
+
+      // ── The security-critical step. Nothing optional runs before this. ──
+      const restriction = await this.applyRestrictions(ctx, group.id, user.id);
+      if (!restriction.ok) {
+        await this.handleRestrictionFailure(ctx, user, group, restriction.error ?? 'unknown error');
+        // Still record the join. This member is unrestricted and unverified —
+        // exactly the case where the content filter's new-user link delay is
+        // the only remaining guard — and that delay is driven entirely by the
+        // join timestamp written here.
+        await this.recordJoinBookkeeping(user, group);
+        return;
+      }
+
+      const existingSession = await this.verificationService.getPendingSession(user.id, group.id);
+      if (existingSession) {
+        this.logger.info('Cancelling existing session for user', {
+          userId: user.id,
+          sessionId: existingSession.id,
+        });
+        await this.verificationService.cancelSession(existingSession.id);
+        // Remove the superseded prompt too. Leaving it up stranded a button in
+        // the group that always failed when pressed, since its session was gone.
+        if (existingSession.messageId) {
+          await this.bestEffort('delete superseded welcome message', () =>
+            ctx.api.deleteMessage(Number(group.id), existingSession.messageId)
+          );
+        }
+      }
+
+      const session = await this.verificationService.createSession(
+        user.id,
+        group.id,
+        0,
+        settings.ttlMinutes
+      );
+      await this.bestEffort('mark restriction applied', () =>
+        this.verificationService.markRestrictionApplied(session.id, true)
+      );
+
+      const welcomeMsg = await this.sendWelcomeMessage(ctx, user, group, settings, session.id);
+      if (welcomeMsg) {
+        await this.verificationService.updateSessionMessageId(session.id, welcomeMsg.message_id);
+      } else {
+        // The user is muted and holds a pending session, but never received a
+        // verification link — they would sit silent until the timeout removed
+        // them, with no way to act and no signal to anyone. Make it visible.
+        this.logger.error('Welcome message failed; user is muted with no way to verify', {
+          groupId: group.id,
+          userId: user.id,
+          sessionId: session.id,
+        });
+        await this.bestEffort('notify verification-link failure', () =>
+          ctx.api.sendMessage(
+            Number(group.id),
+            `⚠️ 无法向 ${escapeHtml(user.firstName)} 发送验证链接，该成员已被限制但收不到验证入口。\n` +
+              `请管理员使用 /reverify 重新下发，或检查机器人发言权限。`,
+            { parse_mode: 'HTML' }
+          )
+        );
+      }
+      // Timeout is handled by SchedulerService's periodic cleanup.
+
+      // Bookkeeping last: useful, but never a reason to let someone in.
+      await this.recordJoinBookkeeping(user, group);
     } catch (error) {
       this.logger.error('Error processing new member', error);
+      // Fail closed. We could not complete the decision, so deny speech rather
+      // than default to granting it, and tell the group why.
+      await this.emergencyRestrict(ctx, chatId, userId, error);
+    } finally {
+      await this.bestEffort('release join lock', () => redisService.delete(redisLockKey));
+      setTimeout(() => {
+        this.processingUsers.delete(lockKey);
+      }, 3000);
     }
   }
 
-  private async applyRestrictions(ctx: MyContext, groupId: string, userId: string) {
+  /**
+   * Non-critical work that must never abort the join guard. Each call is logged
+   * on failure and otherwise ignored.
+   */
+  private async bestEffort(what: string, fn: () => Promise<unknown>): Promise<void> {
+    try {
+      await fn();
+    } catch (error) {
+      this.logger.warn(`Best-effort step failed: ${what}`, error);
+    }
+  }
+
+  private async recordJoinBookkeeping(
+    user: { id: string; username?: string | null; firstName: string },
+    group: { id: string }
+  ): Promise<void> {
+    // A former member rejoining: revive their existing profile so prior
+    // XP/level/coins reappear on the leaderboard (no-op if none exists).
+    await this.bestEffort('reactivateProfile', () =>
+      this.levelService.reactivateProfile(user.id, group.id)
+    );
+    // Join time backs the content filter's new-user link delay.
+    await this.bestEffort('recordUserJoinTime', () =>
+      this.contentFilterService.recordUserJoinTime(group.id, user.id)
+    );
+    await this.bestEffort('audit user_joined', () =>
+      this.auditService.log({
+        groupId: group.id,
+        userId: user.id,
+        action: 'user_joined',
+        details: `User @${user.username || user.firstName} joined the group`,
+      })
+    );
+  }
+
+  /**
+   * Last-resort mute when the normal path threw before a decision was reached
+   * (database down, Redis down, unexpected bug). Muting a legitimate user is
+   * recoverable by an admin; letting an automated account in is not.
+   */
+  private async emergencyRestrict(
+    ctx: MyContext,
+    groupId: string,
+    userId: string,
+    cause: unknown
+  ): Promise<void> {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    const result = await this.applyRestrictions(ctx, groupId, userId);
+
+    if (result.ok) {
+      this.logger.warn('Applied emergency restriction after join-processing failure', {
+        groupId,
+        userId,
+        reason,
+      });
+      try {
+        await ctx.api.sendMessage(
+          Number(groupId),
+          `⚠️ 处理新成员时发生内部错误，已先行限制该成员以策安全。\n` +
+            `请管理员确认后使用 /unmute 解除，或让其重新入群。`,
+          { parse_mode: 'HTML' }
+        );
+      } catch (error) {
+        this.logger.debug('Could not post emergency restriction notice', error);
+      }
+    } else {
+      this.logger.error('Emergency restriction also failed — member is unguarded', {
+        groupId,
+        userId,
+        reason,
+        restrictError: result.error,
+      });
+    }
+  }
+
+  /**
+   * Mute a joining member until they verify.
+   *
+   * Returns the outcome instead of swallowing it. The previous version caught
+   * every error and returned void, so a bot that was not an admin, lacked
+   * can_restrict_members, or sat in a basic group (where restrictChatMember is
+   * not supported at all) still had a verification session created and a
+   * welcome message posted — the user was completely unrestricted while the
+   * system recorded them as safely pending.
+   */
+  private async applyRestrictions(
+    ctx: MyContext,
+    groupId: string,
+    userId: string
+  ): Promise<{ ok: boolean; error?: string }> {
     try {
       await ctx.api.restrictChatMember(Number(groupId), Number(userId), {
         can_send_messages: false,
         can_send_audios: false,
+        can_send_documents: false,
+        can_send_photos: false,
+        can_send_videos: false,
+        can_send_video_notes: false,
+        can_send_voice_notes: false,
         can_send_polls: false,
         can_send_other_messages: false,
         can_add_web_page_previews: false,
@@ -303,8 +508,57 @@ export class MembershipHandler {
         can_invite_users: false,
         can_pin_messages: false,
       });
+      return { ok: true };
     } catch (error) {
-      this.logger.error('Error applying restrictions', error);
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error('Error applying restrictions', { groupId, userId, error: message });
+      return { ok: false, error: message };
+    }
+  }
+
+  /**
+   * The bot could not mute a new member. This is a hard failure of the join
+   * guard, so it must be loud: no verification session is created (that would
+   * record a false "pending" state), admins are told what is wrong, and the
+   * event is audited.
+   */
+  private async handleRestrictionFailure(
+    ctx: MyContext,
+    user: { id: string; firstName: string },
+    group: { id: string; title: string },
+    reason: string
+  ): Promise<void> {
+    this.logger.error('Join guard failed: could not restrict new member', {
+      groupId: group.id,
+      userId: user.id,
+      reason,
+    });
+
+    await this.auditService
+      .log({
+        groupId: group.id,
+        userId: user.id,
+        action: 'restriction_failed',
+        details: `Failed to restrict joining member: ${reason}`,
+      })
+      .catch((e) => this.logger.debug('audit log failed', e));
+
+    const hint = /not enough rights|CHAT_ADMIN_REQUIRED|can_restrict/i.test(reason)
+      ? '机器人缺少「限制成员」管理员权限。'
+      : /supergroup|method is available/i.test(reason)
+        ? '本群还是普通群组，请升级为超级群组后验证功能才可用。'
+        : '请检查机器人的管理员权限。';
+
+    const alert =
+      `⚠️ <b>验证功能未生效</b>\n\n` +
+      `无法限制新成员 ${escapeHtml(user.firstName)}，该用户当前<b>未被限制</b>。\n` +
+      `原因：${hint}\n\n` +
+      `<code>${escapeHtml(reason.slice(0, 200))}</code>`;
+
+    try {
+      await ctx.api.sendMessage(Number(group.id), alert, { parse_mode: 'HTML' });
+    } catch (error) {
+      this.logger.error('Could not notify group about restriction failure', error);
     }
   }
 
@@ -312,14 +566,19 @@ export class MembershipHandler {
     ctx: MyContext,
     user: { id: string; firstName: string },
     group: { id: string; title: string },
-    settings: { ttlMinutes: number; deleteWelcomeMessage: boolean; deleteWelcomeMessageAfter: number },
+    settings: {
+      ttlMinutes: number;
+      deleteWelcomeMessage: boolean;
+      deleteWelcomeMessageAfter: number;
+      welcomeTemplate?: string;
+    },
     sessionId: string
   ): Promise<any> {
     try {
-      const welcomeText = `新成员【${escapeHtml(user.firstName)}】 你好！
-小菲欢迎您加入${escapeHtml(group.title)}
-您当前需要完成验证才能解除限制，验证有效时间不超过${settings.ttlMinutes * 60} 秒。
-过期会被踢出或封禁，请尽快。`;
+      // Honour the group's configured template. /settings let admins edit this
+      // and showed the result back to them, but the join path ignored it and
+      // always posted the hardcoded copy below.
+      const welcomeText = this.renderWelcomeTemplate(settings.welcomeTemplate, user, group, settings.ttlMinutes);
 
       const botUsername = config.bot.username || 'bot';
       const keyboard = new InlineKeyboard();
@@ -359,6 +618,26 @@ export class MembershipHandler {
       this.logger.error('Error sending welcome message', error);
       return null;
     }
+  }
+
+  /**
+   * Fill the group's welcome template via the shared implementation. This used
+   * to be a second, subtly different copy: it escaped the stored template
+   * unconditionally, so a template an admin wrote with <b> rendered as bold
+   * through /reverify but as literal tags when someone actually joined.
+   */
+  private renderWelcomeTemplate(
+    template: string | undefined,
+    user: { firstName: string },
+    group: { title: string },
+    ttlMinutes: number
+  ): string {
+    return renderWelcomeTemplate(
+      template,
+      { userName: user.firstName, groupName: group.title, ttlMinutes },
+      (error) =>
+        this.logger.warn('Welcome template is not valid Telegram HTML; sending it as plain text', { error })
+    );
   }
 
   async handleBotStatusUpdate(ctx: MyContext) {

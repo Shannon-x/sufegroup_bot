@@ -13,3 +13,11 @@ logs
 nginx
 scripts
 docker-compose*.yml
+
+# 设计原型页。public/ 整个目录由 @fastify/static 以 / 前缀对外托管，
+# 不排除的话这些页面在生产环境可被直接访问（/preview/mini-app-preview.html）。
+public/preview
+
+# 测试代码不进生产镜像
+test
+vitest.config.mjs

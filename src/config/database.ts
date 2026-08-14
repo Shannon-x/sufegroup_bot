@@ -1,4 +1,5 @@
 import { DataSource } from 'typeorm';
+import path from 'path';
 import { config } from './config';
 import { User } from '../entities/User';
 import { Group } from '../entities/Group';
@@ -32,6 +33,11 @@ export const AppDataSource = new DataSource({
     Lottery,
     ChatwootVerificationSession,
   ],
-  migrations: ['dist/migrations/*.js'],
+  // Resolved from this file's location rather than the process working
+  // directory. The previous relative glob ('dist/migrations/*.js') matched
+  // nothing whenever the app was started from another directory — and TypeORM
+  // reports "no migrations to run" as success, so the schema silently stayed
+  // unmigrated. The brace covers both ts-node (src/*.ts) and compiled (dist/*.js).
+  migrations: [path.join(__dirname, '..', 'migrations', '*.{js,ts}')],
   subscribers: [],
 });

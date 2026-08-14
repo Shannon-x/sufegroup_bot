@@ -1,6 +1,7 @@
 import { CommandContext } from 'grammy';
 import { BaseCommand } from './BaseCommand';
 import { MyContext } from '../services/TelegramBot';
+import { escapeHtml } from '../utils/markdown';
 
 export class BlacklistCommand extends BaseCommand {
   command = 'blacklist';
@@ -11,10 +12,11 @@ export class BlacklistCommand extends BaseCommand {
   }
 
   private async execute(ctx: CommandContext<MyContext>) {
-    if (!await this.requireAdmin(ctx)) return;
+    // Blacklisting bans the target, so it needs the ban right rather than bare
+    // administrator status.
+    if (!await this.requireAdmin(ctx, ['can_restrict_members'])) return;
 
-    const args = ctx.match?.toString().trim().split(/\s+/) || [];
-    const subCommand = args[0]?.toLowerCase();
+    const subCommand = this.commandArgs(ctx).split(/\s+/)[0]?.toLowerCase();
     const groupId = ctx.chat!.id.toString();
 
     switch (subCommand) {
@@ -32,21 +34,26 @@ export class BlacklistCommand extends BaseCommand {
           '❌ 用法:\n' +
           '/blacklist add @用户 [原因] - 添加黑名单\n' +
           '/blacklist remove @用户 - 移除黑名单\n' +
-          '/blacklist list - 查看黑名单'
+          '/blacklist list - 查看黑名单\n' +
+          '（也可回复某人的消息后使用 /blacklist add [原因]）'
         );
     }
   }
 
   private async addToBlacklist(ctx: CommandContext<MyContext>, groupId: string) {
-    const commandText = ctx.match?.toString() || '';
-    const targetUserId = await this.getUserFromMention(ctx);
+    // skipTokens = 1 drops the "add" sub-command; without it parseUserTarget
+    // read "add" as the target, so no user was ever resolved and the reason was
+    // taken from the wrong offset.
+    const { userId: targetUserId, username, reason } = await this.resolveTarget(ctx, 1);
 
     if (!targetUserId) {
-      await ctx.reply('❌ 请指定要添加到黑名单的用户');
+      await ctx.reply(
+        username
+          ? `❌ 无法找到用户 @${username}\n请确保该用户曾在本群发言，或改用回复其消息的方式`
+          : '❌ 请指定要添加到黑名单的用户'
+      );
       return;
     }
-
-    const { reason } = this.parseUserTarget(commandText.substring(4)); // Skip 'add '
 
     try {
       // Check if already blacklisted
@@ -95,10 +102,14 @@ export class BlacklistCommand extends BaseCommand {
   }
 
   private async removeFromBlacklist(ctx: CommandContext<MyContext>, groupId: string) {
-    const targetUserId = await this.getUserFromMention(ctx);
+    const { userId: targetUserId, username } = await this.resolveTarget(ctx, 1);
 
     if (!targetUserId) {
-      await ctx.reply('❌ 请指定要从黑名单移除的用户');
+      await ctx.reply(
+        username
+          ? `❌ 无法找到用户 @${username}\n请确保该用户曾在本群发言，或改用回复其消息的方式`
+          : '❌ 请指定要从黑名单移除的用户'
+      );
       return;
     }
 
@@ -146,21 +157,23 @@ export class BlacklistCommand extends BaseCommand {
         return;
       }
 
-      let message = '🚫 *黑名单用户*\n\n';
+      // HTML + escaping: nicknames and reasons are free text and would otherwise
+      // break (or forge markup in) the whole listing under Markdown.
+      let message = '🚫 <b>黑名单用户</b>\n\n';
       for (const entry of blacklists) {
         const user = entry.user;
-        message += `• ${user.firstName}`;
+        message += `• ${escapeHtml(user.firstName)}`;
         if (user.username) {
-          message += ` (@${user.username})`;
+          message += ` (@${escapeHtml(user.username)})`;
         }
         message += ` - ID: ${user.id}`;
         if (entry.reason) {
-          message += `\n  原因: ${entry.reason}`;
+          message += `\n  原因: ${escapeHtml(entry.reason)}`;
         }
         message += '\n';
       }
 
-      await ctx.reply(message, { parse_mode: 'Markdown' });
+      await ctx.reply(message, { parse_mode: 'HTML' });
 
     } catch (error) {
       this.logger.error('Error listing blacklist', error);

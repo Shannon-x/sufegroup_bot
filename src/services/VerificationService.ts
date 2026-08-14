@@ -1,6 +1,8 @@
 import { Repository } from 'typeorm';
 import { AppDataSource } from '../config/database';
 import { JoinSession, SessionStatus } from '../entities/JoinSession';
+import { GroupSettings, AutoAction } from '../entities/GroupSettings';
+import { AuditLog } from '../entities/AuditLog';
 import { Whitelist } from '../entities/Whitelist';
 import { Blacklist } from '../entities/Blacklist';
 import { Logger } from '../utils/logger';
@@ -10,6 +12,12 @@ import { sendTemporaryMessage, kickUser, formatUserMention } from '../utils/tele
 import { Bot } from 'grammy';
 
 const CLEANUP_BATCH_SIZE = 100;
+/** Upper bound on batches per run, so a persistent failure can't pin the scheduler. */
+const MAX_CLEANUP_ROUNDS = 20;
+/** Removal attempts before a session is escalated for manual intervention. */
+const MAX_REMOVAL_ATTEMPTS = 5;
+/** Backoff before retrying a failed removal, so transient API errors settle. */
+const REMOVAL_RETRY_DELAY_MS = 60 * 1000;
 
 export class VerificationService {
   private sessionRepository: Repository<JoinSession>;
@@ -73,20 +81,46 @@ export class VerificationService {
     }
 
     if (new Date() > session.expiresAt) {
-      session.status = 'expired';
-      await this.sessionRepository.save(session);
+      // Deliberately does NOT persist a status change.
+      //
+      // This branch is reachable by the account being policed — it just has to
+      // open its verification link after the deadline. Writing 'expired' here
+      // moved the row out of the cleanup job's claim query, so the scheduler
+      // never removed it: an unverified account simply stayed in the group
+      // forever by clicking its own link late. Every transition out of
+      // 'pending' now belongs to the scheduler alone.
+      this.logger.info('Verification attempted after expiry; leaving enforcement to the scheduler', {
+        sessionId,
+        userId: session.userId,
+      });
       return false;
     }
 
-    session.status = 'verified';
-    session.verifiedAt = new Date();
-    session.userIp = userIp;
-    session.userAgent = userAgent;
+    // Conditional update rather than read-modify-write. Two submissions racing
+    // on the same session (double-click, retried request) could both observe
+    // 'pending' and both "succeed", firing the unrestrict and the announcement
+    // twice. Exactly one caller can win this UPDATE.
+    const result = await this.sessionRepository
+      .createQueryBuilder()
+      .update(JoinSession)
+      .set({
+        status: 'verified',
+        verifiedAt: new Date(),
+        userIp,
+        userAgent,
+      })
+      .where('id = :id', { id: sessionId })
+      .andWhere('status = :status', { status: 'pending' })
+      .andWhere('"expiresAt" > :now', { now: new Date() })
+      .execute();
 
-    await this.sessionRepository.save(session);
-    this.logger.info(`Verified session ${sessionId} for user ${session.userId}`);
-
-    return true;
+    const won = (result.affected ?? 0) > 0;
+    if (won) {
+      this.logger.info(`Verified session ${sessionId} for user ${session.userId}`);
+    } else {
+      this.logger.debug('Lost the race to verify this session', { sessionId });
+    }
+    return won;
   }
 
   async incrementAttempts(sessionId: string): Promise<number> {
@@ -182,29 +216,26 @@ export class VerificationService {
   async cleanupExpiredSessions(bot?: Bot<any>): Promise<number> {
     let totalProcessed = 0;
 
-    // Process in batches to avoid loading too many sessions at once
-    for (;;) {
-      const expiredSessions = await this.sessionRepository
-        .createQueryBuilder('session')
-        .leftJoinAndSelect('session.user', 'user')
-        .leftJoinAndSelect('session.group', 'group')
-        .where('session.status = :status', { status: 'pending' })
-        .andWhere('session.expiresAt < :now', { now: new Date() })
-        .take(CLEANUP_BATCH_SIZE)
-        .getMany();
+    // Bounded rounds. The old loop re-queried the same `pending` rows every
+    // iteration and relied on processExpiredSession having flipped their status
+    // to advance; a DB write failure there meant the identical batch came back
+    // forever and pinned the scheduler. Claiming is now atomic and the round
+    // count is capped, so a persistent failure degrades instead of hanging.
+    for (let round = 0; round < MAX_CLEANUP_ROUNDS; round++) {
+      const claimed = await this.claimExpiredSessions(CLEANUP_BATCH_SIZE);
+      if (claimed.length === 0) break;
 
-      if (expiredSessions.length === 0) break;
-
-      for (const session of expiredSessions) {
+      for (const session of claimed) {
         try {
-          await this.processExpiredSession(session, bot);
+          await this.processClaimedSession(session, bot);
           totalProcessed++;
         } catch (error) {
           this.logger.error(`Failed to process expired session ${session.id}`, error);
+          await this.recordRemovalFailure(session, error);
         }
       }
 
-      if (expiredSessions.length < CLEANUP_BATCH_SIZE) break;
+      if (claimed.length < CLEANUP_BATCH_SIZE) break;
     }
 
     if (totalProcessed > 0) {
@@ -213,43 +244,250 @@ export class VerificationService {
     return totalProcessed;
   }
 
-  private async processExpiredSession(session: JoinSession, bot?: Bot<any>): Promise<void> {
-    // Update session status first to prevent duplicate processing
-    session.status = 'expired';
-    await this.sessionRepository.save(session);
+  /**
+   * Atomically move a batch of due sessions into `removal_pending` and return
+   * them. The conditional UPDATE is the concurrency guard: with several bot
+   * instances running, exactly one wins each row, so a user is never kicked
+   * twice and never announced twice.
+   *
+   * Picks up both freshly expired `pending` sessions and `removal_pending`
+   * sessions whose removal previously failed and are due for a retry.
+   */
+  private async claimExpiredSessions(limit: number): Promise<JoinSession[]> {
+    const now = new Date();
+    const retryCutoff = new Date(now.getTime() - REMOVAL_RETRY_DELAY_MS);
 
-    if (!bot || !session.user || !session.group) return;
+    const candidates = await this.sessionRepository
+      .createQueryBuilder('session')
+      .select('session.id')
+      .where('session.expiresAt < :now', { now })
+      .andWhere(
+        `(session.status = 'pending'
+          OR (session.status = 'removal_pending'
+              AND session.removalAttempts < :maxAttempts
+              AND session.updatedAt < :retryCutoff))`,
+        { maxAttempts: MAX_REMOVAL_ATTEMPTS, retryCutoff }
+      )
+      .orderBy('session.expiresAt', 'ASC')
+      .take(limit)
+      .getMany();
 
-    const chatId = Number(session.groupId);
-    const userId = Number(session.userId);
-    const userMention = formatUserMention(session.user, session.userId);
+    if (candidates.length === 0) return [];
 
-    try {
-      await sendTemporaryMessage(
-        bot,
-        chatId,
-        `⏰ ${userMention} 未在规定时间内完成验证，已被移除。`,
-        { parse_mode: 'HTML' }
-      );
-    } catch (error) {
-      this.logger.error('Failed to send timeout notification', error);
-    }
+    const claimedIds: string[] = [];
+    for (const candidate of candidates) {
+      const result = await this.sessionRepository
+        .createQueryBuilder()
+        .update(JoinSession)
+        .set({ status: 'removal_pending' })
+        .where('id = :id', { id: candidate.id })
+        .andWhere(`(status = 'pending' OR status = 'removal_pending')`)
+        .execute();
 
-    // Delete the original welcome message
-    if (session.messageId) {
-      try {
-        await bot.api.deleteMessage(chatId, session.messageId);
-      } catch (error) {
-        this.logger.debug('Could not delete welcome message', { sessionId: session.id });
+      if (result.affected && result.affected > 0) {
+        claimedIds.push(candidate.id);
       }
     }
 
-    // Kick the user
-    try {
-      await kickUser(bot, chatId, userId);
-    } catch (error) {
-      this.logger.error('Failed to kick user on timeout', error);
+    if (claimedIds.length === 0) return [];
+
+    return this.sessionRepository
+      .createQueryBuilder('session')
+      .leftJoinAndSelect('session.user', 'user')
+      .leftJoinAndSelect('session.group', 'group')
+      .where('session.id IN (:...ids)', { ids: claimedIds })
+      .getMany();
+  }
+
+  /**
+   * Carry out the group's configured timeout policy for a claimed session.
+   *
+   * Two rules matter here, and both were violated by the previous version:
+   * the session only reaches a terminal state once the Telegram call actually
+   * succeeded, and the group is only told the user was removed once they
+   * really were.
+   */
+  private async processClaimedSession(session: JoinSession, bot?: Bot<any>): Promise<void> {
+    if (!bot) {
+      // No bot handle (should not happen in production) — leave the row claimed
+      // so a later run with a live bot retries rather than losing the work.
+      return;
     }
+
+    const chatId = Number(session.groupId);
+    const userId = Number(session.userId);
+    const action = await this.resolveAutoAction(session.groupId);
+
+    if (action === 'mute') {
+      // Policy is to leave the user muted rather than remove them.
+      //
+      // This re-applies the restriction instead of assuming the join-time one
+      // still holds. It often does not: a verification submission lifts the
+      // mute before marking the session verified, so a submission that fails
+      // afterwards leaves an unverified account unmuted with its session still
+      // pending. Announcing "已被禁言" without re-muting made that permanent.
+      // Re-applying is also idempotent for the common case where the user was
+      // never unmuted at all.
+      await this.reapplyRestriction(bot, chatId, userId);
+
+      await this.finalizeSession(session, 'expired');
+      await this.auditTimeout(session, 'mute');
+      await this.announceTimeout(bot, chatId, session, 'mute');
+      await this.deleteWelcomeMessage(bot, chatId, session);
+      return;
+    }
+
+    // kick policy: the removal must succeed before anything is announced or the
+    // session is closed. A throw here propagates to recordRemovalFailure().
+    await kickUser(bot, chatId, userId);
+
+    await this.finalizeSession(session, 'removed');
+    await this.auditTimeout(session, 'kick');
+    await this.announceTimeout(bot, chatId, session, 'kick');
+    await this.deleteWelcomeMessage(bot, chatId, session);
+  }
+
+  /**
+   * Timeout enforcement had no audit trail at all, so a group could not tell
+   * afterwards who was removed for failing verification, or how often it happened.
+   */
+  private async auditTimeout(session: JoinSession, action: AutoAction): Promise<void> {
+    try {
+      await AppDataSource.getRepository(AuditLog).save({
+        groupId: session.groupId,
+        userId: session.userId,
+        action: 'timeout_enforced' as const,
+        details: `Verification timed out; policy=${action}`,
+      });
+    } catch (error) {
+      this.logger.warn('Could not write timeout audit entry', error);
+    }
+  }
+
+  /**
+   * Re-assert the verification mute. Throws on failure so the caller records a
+   * failed enforcement and retries — a mute policy that silently fails to mute
+   * is the same false-success this whole state machine exists to eliminate.
+   */
+  private async reapplyRestriction(bot: Bot<any>, chatId: number, userId: number): Promise<void> {
+    await bot.api.restrictChatMember(chatId, userId, {
+      can_send_messages: false,
+      can_send_audios: false,
+      can_send_documents: false,
+      can_send_photos: false,
+      can_send_videos: false,
+      can_send_video_notes: false,
+      can_send_voice_notes: false,
+      can_send_polls: false,
+      can_send_other_messages: false,
+      can_add_web_page_previews: false,
+      can_change_info: false,
+      can_invite_users: false,
+      can_pin_messages: false,
+    });
+  }
+
+  /** Read the group's timeout policy, defaulting to the configured fallback. */
+  private async resolveAutoAction(groupId: string): Promise<AutoAction> {
+    try {
+      const settings = await AppDataSource.getRepository(GroupSettings).findOne({
+        where: { groupId },
+      });
+      return settings?.autoAction ?? config.defaults.autoAction;
+    } catch (error) {
+      this.logger.warn('Could not read autoAction, using default', error);
+      return config.defaults.autoAction;
+    }
+  }
+
+  private async finalizeSession(session: JoinSession, status: SessionStatus): Promise<void> {
+    await this.sessionRepository.update({ id: session.id }, { status, lastError: undefined });
+  }
+
+  /**
+   * Record a failed removal so it is retried and, once retries are exhausted,
+   * left visible rather than silently dropped. The session deliberately stays
+   * in `removal_pending` — an unremoved user is unfinished business.
+   */
+  private async recordRemovalFailure(session: JoinSession, error: unknown): Promise<void> {
+    const message = error instanceof Error ? error.message : String(error);
+    const attempts = (session.removalAttempts ?? 0) + 1;
+
+    try {
+      await this.sessionRepository.update(
+        { id: session.id },
+        { removalAttempts: attempts, lastError: message.slice(0, 500) }
+      );
+    } catch (updateError) {
+      this.logger.error('Failed to record removal failure', updateError);
+    }
+
+    if (attempts >= MAX_REMOVAL_ATTEMPTS) {
+      this.logger.error('Removal permanently failed — manual intervention required', {
+        sessionId: session.id,
+        userId: session.userId,
+        groupId: session.groupId,
+        attempts,
+        lastError: message,
+      });
+    } else {
+      this.logger.warn('Removal failed, will retry', {
+        sessionId: session.id,
+        attempts,
+        lastError: message,
+      });
+    }
+  }
+
+  private async announceTimeout(
+    bot: Bot<any>,
+    chatId: number,
+    session: JoinSession,
+    action: AutoAction
+  ): Promise<void> {
+    if (!session.user) return;
+    const userMention = formatUserMention(session.user, session.userId);
+    const text =
+      action === 'kick'
+        ? `⏰ ${userMention} 未在规定时间内完成验证，已被移除。`
+        : `⏰ ${userMention} 未在规定时间内完成验证，已被禁言。`;
+
+    try {
+      await sendTemporaryMessage(bot, chatId, text, { parse_mode: 'HTML' });
+    } catch (error) {
+      this.logger.error('Failed to send timeout notification', error);
+    }
+  }
+
+  private async deleteWelcomeMessage(
+    bot: Bot<any>,
+    chatId: number,
+    session: JoinSession
+  ): Promise<void> {
+    if (!session.messageId) return;
+    try {
+      await bot.api.deleteMessage(chatId, session.messageId);
+    } catch {
+      this.logger.debug('Could not delete welcome message', { sessionId: session.id });
+    }
+  }
+
+  /**
+   * Sessions stuck in `removal_pending` past their retry budget — the group has
+   * an unverified member the bot could not remove. Surfaced for alerting.
+   */
+  async getStuckRemovals(): Promise<JoinSession[]> {
+    return this.sessionRepository
+      .createQueryBuilder('session')
+      .leftJoinAndSelect('session.user', 'user')
+      .where('session.status = :status', { status: 'removal_pending' })
+      .andWhere('session.removalAttempts >= :maxAttempts', { maxAttempts: MAX_REMOVAL_ATTEMPTS })
+      .getMany();
+  }
+
+  /** Mark that the join-time restriction call genuinely succeeded. */
+  async markRestrictionApplied(sessionId: string, applied: boolean): Promise<void> {
+    await this.sessionRepository.update({ id: sessionId }, { restrictionApplied: applied });
   }
 
   generateVerificationUrl(userId: string, groupId: string, sessionId: string): string {

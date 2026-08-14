@@ -13,8 +13,12 @@ export class TelegramIpWhitelist {
   ];
 
   static async verify(request: FastifyRequest, reply: FastifyReply): Promise<boolean> {
-    const forwardedFor = request.headers['x-forwarded-for'] as string;
-    const remoteIp = forwardedFor ? forwardedFor.split(',')[0].trim() : request.ip;
+    // Use Fastify's resolved request.ip, which honours the configured
+    // `trustProxy` setting. Reading X-Forwarded-For directly (as this used to)
+    // trusts a header the client controls: behind a proxy that forwards rather
+    // than overwrites it, anyone could prepend a Telegram IP and satisfy this
+    // check. TRUST_PROXY decides how many hops are believed.
+    const remoteIp = this.normalizeIp(request.ip);
 
     if (!remoteIp) {
       this.logger.warn('No IP address found in request');
@@ -40,6 +44,16 @@ export class TelegramIpWhitelist {
     }
 
     return true;
+  }
+
+  /**
+   * Strip the IPv4-mapped IPv6 prefix Node reports on dual-stack sockets
+   * (`::ffff:149.154.167.51`), which would otherwise fail the dotted-quad parse
+   * and reject legitimate Telegram traffic.
+   */
+  private static normalizeIp(ip: string | undefined): string | undefined {
+    if (!ip) return undefined;
+    return ip.startsWith('::ffff:') ? ip.slice(7) : ip;
   }
 
   private static ipToNumber(ip: string): number | null {

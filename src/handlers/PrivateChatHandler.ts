@@ -47,7 +47,17 @@ export class PrivateChatHandler {
       }
 
       if (new Date() > session.expiresAt) {
-        await this.verificationService.updateSessionStatus(session.id, 'expired');
+        // Deliberately does NOT touch the session status.
+        //
+        // The timeout cleanup job claims sessions that are still `pending` (or
+        // `removal_pending`) past their deadline; anything already moved out of
+        // those states is treated as handled and is never looked at again.
+        // Marking the session `expired` from here therefore removed the user
+        // from the kick queue — so any account could dodge removal simply by
+        // re-opening its own verification link after the deadline, which is
+        // exactly what an automated joiner does. Only the cleanup job is
+        // allowed to advance a session to a disposed state; a user-facing path
+        // may report the outcome but never decide it.
         await ctx.reply('验证已过期。请返回群组重新获取验证链接。');
         return;
       }

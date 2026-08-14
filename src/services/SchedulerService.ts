@@ -4,6 +4,7 @@ import { AuditService } from './AuditService';
 import { LevelService } from './LevelService';
 import { UserService } from './UserService';
 import { TelegramBot } from './TelegramBot';
+import { redisService } from './RedisService';
 
 export class SchedulerService {
   private logger: Logger;
@@ -27,9 +28,37 @@ export class SchedulerService {
     this.logger.info('Starting scheduler service');
 
     // Clean up expired sessions every 1 minute (reduced from 5 minutes since
-    // this is now the sole timeout mechanism - no per-session setTimeout)
+    // this is now the sole timeout mechanism - no per-session setTimeout).
+    //
+    // Guarded by a Redis lock so a multi-replica deployment does not run the
+    // sweep concurrently. Session claiming is already atomic, so the lock is an
+    // efficiency measure rather than the correctness boundary — but it also
+    // stops N replicas from each hammering the Telegram API on every tick.
     this.intervals.push(
       setInterval(async () => {
+        // Do not punish users for our own outage.
+        //
+        // The verification endpoints refuse to redeem a captcha token when
+        // Redis cannot answer — the replay guard fails closed on purpose, since
+        // an open one would accept a replayed token exactly when an attacker
+        // wants it to. The consequence is that during a Redis outage nobody can
+        // complete verification, and enforcing timeouts through that window
+        // would kick every pending member for failing something they were not
+        // able to do. Sessions stay claimable and are handled once Redis is
+        // back; the members remain muted in the meantime, so the group is still
+        // protected.
+        if (!(await redisService.ping())) {
+          this.logger.warn(
+            'Redis unavailable — verification cannot be completed, so timeout enforcement is paused'
+          );
+          return;
+        }
+
+        const lockKey = 'lock:cleanup-expired-sessions';
+        if (!(await redisService.acquireLock(lockKey, 55))) {
+          this.logger.debug('Another instance holds the cleanup lock, skipping');
+          return;
+        }
         try {
           const count = await this.verificationService.cleanupExpiredSessions(this.bot.getBot());
           if (count > 0) {
@@ -39,6 +68,31 @@ export class SchedulerService {
           this.logger.error('Error cleaning up expired sessions', error);
         }
       }, 60 * 1000)
+    );
+
+    // Surface sessions whose removal exhausted its retries: each one is an
+    // unverified member the bot failed to remove and that no longer retries.
+    // Previously these vanished silently.
+    this.intervals.push(
+      setInterval(async () => {
+        try {
+          const stuck = await this.verificationService.getStuckRemovals();
+          if (stuck.length > 0) {
+            this.logger.error('Sessions stuck awaiting removal — manual intervention required', {
+              count: stuck.length,
+              sessions: stuck.slice(0, 20).map((s) => ({
+                sessionId: s.id,
+                userId: s.userId,
+                groupId: s.groupId,
+                attempts: s.removalAttempts,
+                lastError: s.lastError,
+              })),
+            });
+          }
+        } catch (error) {
+          this.logger.error('Error checking stuck removals', error);
+        }
+      }, 10 * 60 * 1000)
     );
 
     // Clean up old audit logs every day (keep last 90 days)

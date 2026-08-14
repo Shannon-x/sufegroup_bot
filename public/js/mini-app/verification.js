@@ -137,10 +137,23 @@ async function initVerification(sessionId, mode) {
 
 function renderTurnstile() {
   var container = document.getElementById('v-turnstile-container');
+  // Without a session id there is nothing to bind the token to, and the server
+  // now rejects an unbound Turnstile token. Fail here, where we can explain it,
+  // instead of letting the user solve a challenge that cannot be redeemed.
+  if (!_vSessionId) {
+    showVerifyMsg('error', '验证会话信息缺失，请返回群组重新点击验证按钮。');
+    return;
+  }
   container.innerHTML = '';
   window.turnstile.render(container, {
     sitekey: SITE_KEY,
     theme: _theme,
+    // Bind the token to this session: Turnstile echoes cData back in the
+    // siteverify response, so the server can reject a token that was solved
+    // for someone else's session and relayed here. Always sent — the binding
+    // used to be skippable, and the widget runs on the client, so "optional"
+    // meant an attacker simply left it out.
+    cData: _vSessionId,
     callback: function(token) {
       _vTurnstileToken = token;
       _vHcaptchaToken = null;
@@ -152,6 +165,11 @@ function renderTurnstile() {
   });
 }
 
+// hCaptcha has no free-tier counterpart to Turnstile's cData (rqdata is
+// Enterprise only), so a solved hCaptcha token cannot be bound to a session at
+// the provider. What holds instead, server-side: the token is single-use, and
+// it can only be redeemed for a pending session owned by the
+// initData-authenticated caller.
 function renderHCaptcha() {
   var container = document.getElementById('v-hcaptcha-container');
   if (_hcWidgetId !== null) {

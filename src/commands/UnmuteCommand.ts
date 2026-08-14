@@ -11,7 +11,9 @@ export class UnmuteCommand extends BaseCommand {
   }
 
   private async execute(ctx: CommandContext<MyContext>) {
-    if (!await this.requireAdmin(ctx)) return;
+    // Moderation acts on other members, so require the ban right instead of
+    // bare administrator status (Telegram allows admins with zero rights).
+    if (!await this.requireAdmin(ctx, ['can_restrict_members'])) return;
 
     const groupId = ctx.chat!.id.toString();
     const targetUserId = await this.getUserFromMention(ctx);

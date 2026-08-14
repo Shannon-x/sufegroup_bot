@@ -19,7 +19,10 @@ export class FilterCommand extends BaseCommand {
   }
 
   private async execute(ctx: CommandContext<MyContext>) {
-    if (!await this.requireAdmin(ctx)) return;
+    // Filter configuration decides which messages get deleted and who gets
+    // muted for posting them, so it is a moderation privilege — a decorative
+    // administrator with no rights must not be able to switch the filter off.
+    if (!await this.requireAdmin(ctx, ['can_delete_messages'])) return;
 
     const args = (ctx.match || '').toString().trim();
     const parts = args.split(/\s+/);

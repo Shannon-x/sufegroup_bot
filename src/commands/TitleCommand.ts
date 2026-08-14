@@ -12,7 +12,9 @@ export class TitleCommand extends BaseCommand {
   }
 
   private async execute(ctx: CommandContext<MyContext>) {
-    if (!await this.requireAdmin(ctx)) return;
+    // Custom level titles are part of the group's presentation, which is what
+    // can_change_info governs.
+    if (!await this.requireAdmin(ctx, ['can_change_info'])) return;
 
     const args = (ctx.match || '').toString().trim();
     const groupId = ctx.chat!.id.toString();

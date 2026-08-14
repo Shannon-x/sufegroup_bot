@@ -2,6 +2,8 @@ import { CommandContext } from 'grammy';
 import { BaseCommand } from './BaseCommand';
 import { MyContext } from '../services/TelegramBot';
 import { GroupSettings } from '../entities/GroupSettings';
+import { escapeHtml } from '../utils/markdown';
+import { validateTelegramHtml } from '../utils/welcomeTemplate';
 
 export class SettingsCommand extends BaseCommand {
   command = 'settings';
@@ -12,17 +14,24 @@ export class SettingsCommand extends BaseCommand {
   }
 
   private async execute(ctx: CommandContext<MyContext>) {
-    if (!await this.requireAdmin(ctx)) return;
-
     const args = ctx.match?.toString().trim().split(/\s+/) || [];
     const subCommand = args[0]?.toLowerCase();
     const groupId = ctx.chat!.id.toString();
+
+    // Reading the configuration and changing it are different privileges.
+    // Requiring can_change_info for the whole command locked moderators out of
+    // simply *looking* at the settings — including the ones responsible for
+    // enforcing them. Only the mutating path needs the right.
+    if (!await this.requireAdmin(ctx)) return;
 
     switch (subCommand) {
       case 'show':
         await this.showSettings(ctx, groupId);
         break;
       case 'set':
+        // These settings switch join verification on/off and set its timeout,
+        // so a right-less "administrator" must not be able to reach them.
+        if (!await this.requireAdmin(ctx, ['can_change_info'])) return;
         await this.setSetting(ctx, groupId, args.slice(1));
         break;
       default:
@@ -42,7 +51,10 @@ export class SettingsCommand extends BaseCommand {
         return;
       }
 
-      const text = `⚙️ *当前群组设置*\n\n` +
+      // HTML mode: the welcome template is admin-supplied free text and a stray
+      // backtick used to break out of the Markdown code block (or make Telegram
+      // reject the whole message).
+      const text = `⚙️ <b>当前群组设置</b>\n\n` +
         `• 验证功能: ${settings.verificationEnabled ? '✅ 启用' : '❌ 禁用'}\n` +
         `• 验证超时: ${settings.ttlMinutes} 分钟\n` +
         `• 超时操作: ${settings.autoAction === 'kick' ? '踢出' : '禁言'}\n` +
@@ -51,9 +63,9 @@ export class SettingsCommand extends BaseCommand {
         `• 欢迎消息延迟删除: ${settings.deleteWelcomeMessageAfter} 秒\n` +
         `• 速率限制: ${settings.rateLimitPerMinute} 次/分钟\n` +
         `• 管理员免验证: ${settings.adminBypassVerification ? '是' : '否'}\n\n` +
-        `• 欢迎消息模板:\n\`${settings.welcomeTemplate}\``;
+        `• 欢迎消息模板:\n<code>${escapeHtml(settings.welcomeTemplate)}</code>`;
 
-      await ctx.reply(text, { parse_mode: 'Markdown' });
+      await ctx.reply(text, { parse_mode: 'HTML' });
 
       await this.auditService.log({
         groupId,
@@ -107,13 +119,28 @@ export class SettingsCommand extends BaseCommand {
           updates.autoAction = value.toLowerCase() as 'mute' | 'kick';
           break;
 
-        case 'welcomeTemplate':
+        case 'welcomeTemplate': {
           if (value.length > 1000) {
             await ctx.reply('❌ 欢迎消息不能超过 1000 个字符');
             return;
           }
+          // The template is substituted into a parse_mode:'HTML' message by the
+          // join path and by /reverify. Length was the only check, so a template
+          // containing < > or a bare & made Telegram reject the whole welcome
+          // message (400 can't parse entities) — leaving new members muted with
+          // no verification entry point. Validate here, where an admin can still
+          // see and fix the mistake.
+          const htmlError = validateTelegramHtml(value);
+          if (htmlError) {
+            await ctx.reply(
+              `${htmlError}\n\n可用示例: <code>&lt;b&gt;粗体&lt;/b&gt; {user_name} {group_name} {ttl}</code>`,
+              { parse_mode: 'HTML' }
+            );
+            return;
+          }
           updates.welcomeTemplate = value;
           break;
+        }
 
         case 'deleteJoinMessage':
           if (!['true', 'false'].includes(value.toLowerCase())) {

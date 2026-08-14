@@ -8,8 +8,10 @@ const envSchema = z.object({
   SERVER_HOST: z.string().optional(),
   HOST: z.string().optional(),
   
-  // Telegram Bot
-  BOT_TOKEN: z.string(),
+  // Telegram Bot. Bare z.string() accepted the empty string, so a missing value
+  // in the environment file passed validation and failed later as a confusing
+  // 401 from the Telegram API.
+  BOT_TOKEN: z.string().min(1, 'BOT_TOKEN must not be empty'),
   BOT_WEBHOOK_DOMAIN: z.string().optional(),
   BOT_WEBHOOK_SECRET: z.string().optional(),
   BOT_USERNAME: z.string().optional(),
@@ -29,7 +31,7 @@ const envSchema = z.object({
   DB_HOST: z.string().default('localhost'),
   DB_PORT: z.string().transform(Number).default('5432'),
   DB_USERNAME: z.string().default('postgres'),
-  DB_PASSWORD: z.string(),
+  DB_PASSWORD: z.string().min(1, 'DB_PASSWORD must not be empty'),
   DB_DATABASE: z.string().default('telegram_bot'),
   
   // Redis
@@ -46,7 +48,7 @@ const envSchema = z.object({
   HCAPTCHA_SECRET_KEY: z.string().optional(),
   
   // Security
-  JWT_SECRET: z.string(),
+  JWT_SECRET: z.string().min(1, 'JWT_SECRET must not be empty'),
   HMAC_SECRET: z.string().optional(),
   
   // Bot Configuration
@@ -55,18 +57,68 @@ const envSchema = z.object({
   DEFAULT_RATE_LIMIT_WINDOW_MS: z.string().transform(Number).default('60000'),
   DEFAULT_RATE_LIMIT_MAX_REQUESTS: z.string().transform(Number).default('10'),
   
+  // Reverse-proxy trust. Fastify's `trustProxy` decides how X-Forwarded-For is
+  // collapsed into request.ip. Blanket `true` trusts the whole chain, which lets
+  // a client forge its apparent source IP if the proxy passes the header
+  // through. Set this to the proxy's address/subnet (or a hop count) in
+  // production; `false` is correct when the app is directly exposed.
+  TRUST_PROXY: z.string().default('false'),
+
   // Logging
   LOG_LEVEL: z.enum(['error', 'warn', 'info', 'debug']).default('info'),
   LOG_FILE_PATH: z.string().default('./logs/bot.log'),
-});
+})
+  .superRefine((env, ctx) => {
+    // A webhook endpoint without a secret token accepts updates from anyone who
+    // learns the URL. Telegram sends the configured secret in the
+    // X-Telegram-Bot-Api-Secret-Token header, so this is always available.
+    if (env.NODE_ENV === 'production' && env.BOT_WEBHOOK_DOMAIN && !env.BOT_WEBHOOK_SECRET) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['BOT_WEBHOOK_SECRET'],
+        message:
+          'BOT_WEBHOOK_SECRET is required in production when BOT_WEBHOOK_DOMAIN is set. ' +
+          'Generate one with `openssl rand -hex 32` and pass it to setWebhook.',
+      });
+    }
 
-const env = envSchema.parse(process.env);
+    if (env.NODE_ENV === 'production' && env.JWT_SECRET.length < 32) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['JWT_SECRET'],
+        message: 'JWT_SECRET must be at least 32 characters in production.',
+      });
+    }
+  });
+
+const parsed = envSchema.safeParse(process.env);
+
+if (!parsed.success) {
+  // Fail fast and legibly: a misconfigured deployment must not boot into a
+  // state where the join guard silently does nothing.
+  const details = parsed.error.issues
+    .map((i) => `  - ${i.path.join('.') || '(root)'}: ${i.message}`)
+    .join('\n');
+  throw new Error(`Invalid environment configuration:\n${details}`);
+}
+
+const env = parsed.data;
+
+/** Parse TRUST_PROXY into the shape Fastify expects. */
+function parseTrustProxy(value: string): boolean | string | number {
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  const asNumber = Number(value);
+  if (!Number.isNaN(asNumber) && value.trim() !== '') return asNumber;
+  return value; // IP or comma-separated subnet list
+}
 
 export const config = {
   env: env.NODE_ENV,
   server: {
     port: env.SERVER_PORT ?? env.PORT ?? 8080,
     host: env.SERVER_HOST ?? env.HOST ?? '0.0.0.0',
+    trustProxy: parseTrustProxy(env.TRUST_PROXY),
   },
   bot: {
     token: env.BOT_TOKEN,
