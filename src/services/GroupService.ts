@@ -63,18 +63,28 @@ export class GroupService {
    */
   async getSettings(groupId: string): Promise<GroupSettings | null> {
     const cacheKey = `gs:${groupId}`;
-    const cached = await redisService.get(cacheKey);
-    if (cached) {
-      try {
+
+    // Redis is a cache here, not a source of truth, so a Redis outage must not
+    // propagate. Previously both calls below were unguarded: a Redis-only
+    // failure threw out of getSettings even though Postgres was perfectly
+    // healthy, which took down the whole moderation pipeline and pushed every
+    // group into degraded handling. Postgres remains the authority.
+    try {
+      const cached = await redisService.get(cacheKey);
+      if (cached) {
         return JSON.parse(cached) as GroupSettings;
-      } catch {
-        // Corrupted cache, fall through to DB
       }
+    } catch (error) {
+      this.logger.warn('Settings cache read failed, falling back to database', error);
     }
 
     const settings = await this.settingsRepository.findOne({ where: { groupId } });
     if (settings) {
-      await redisService.set(cacheKey, JSON.stringify(settings), SETTINGS_CACHE_TTL);
+      try {
+        await redisService.set(cacheKey, JSON.stringify(settings), SETTINGS_CACHE_TTL);
+      } catch (error) {
+        this.logger.warn('Settings cache write failed, continuing uncached', error);
+      }
     }
     return settings;
   }
@@ -83,7 +93,13 @@ export class GroupService {
    * Invalidate settings cache after updates.
    */
   async invalidateSettingsCache(groupId: string): Promise<void> {
-    await redisService.delete(`gs:${groupId}`);
+    // Same reasoning as getSettings: a cache eviction failure must not fail the
+    // settings write that triggered it. The entry expires on its own TTL.
+    try {
+      await redisService.delete(`gs:${groupId}`);
+    } catch (error) {
+      this.logger.warn('Settings cache invalidation failed; entry will expire on TTL', error);
+    }
   }
 
   async findById(groupId: string): Promise<Group | null> {
@@ -117,14 +133,23 @@ export class GroupService {
   async isAdminCached(chatId: number, userId: number, botApi: any, bypassCache = false): Promise<boolean> {
     const cacheKey = `admin:${chatId}:${userId}`;
     if (!bypassCache) {
-      const cached = await redisService.get(cacheKey);
-      if (cached !== null) return cached === '1';
+      try {
+        const cached = await redisService.get(cacheKey);
+        if (cached !== null) return cached === '1';
+      } catch (error) {
+        // Cache miss by another name — fall through to the live API check.
+        this.logger.debug('Admin cache read failed, querying Telegram', error);
+      }
     }
 
     try {
       const member = await botApi.getChatMember(chatId, userId);
       const isAdmin = member.status === 'administrator' || member.status === 'creator';
-      await redisService.set(cacheKey, isAdmin ? '1' : '0', ADMIN_CACHE_TTL);
+      try {
+        await redisService.set(cacheKey, isAdmin ? '1' : '0', ADMIN_CACHE_TTL);
+      } catch {
+        // Uncached is fine; the next call just pays for another API round-trip.
+      }
       return isAdmin;
     } catch {
       return false;

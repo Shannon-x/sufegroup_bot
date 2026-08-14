@@ -20,6 +20,19 @@ export type AuditAction =
   | 'command_executed'
   | 'reverify_triggered'
   | 'bot_added'
+  | 'bot_joined'
+  // Join guard could not mute a new member — the group is unprotected for that
+  // user until an admin fixes the bot's permissions.
+  | 'restriction_failed'
+  // Verification succeeded but lifting the restriction failed; the user is
+  // verified yet still muted, which needs operator attention.
+  | 'unrestrict_failed'
+  // Timeout policy was carried out (or failed to be carried out).
+  | 'timeout_enforced'
+  | 'timeout_enforcement_failed'
+  // A moderation action was announced-or-attempted but the Telegram call failed.
+  | 'moderation_failed'
+  | 'lottery_refunded'
   | 'message_filtered'
   | 'lottery_created'
   | 'lottery_drawn'

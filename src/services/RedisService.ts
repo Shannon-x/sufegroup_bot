@@ -2,6 +2,10 @@ import Redis from 'ioredis';
 import { config } from '../config/config';
 import { Logger } from '../utils/logger';
 
+/** Fail fast so callers reach their degraded path while the request is still alive. */
+const REDIS_CONNECT_TIMEOUT_MS = 2000;
+const REDIS_COMMAND_TIMEOUT_MS = 1000;
+
 export class RedisService {
   private client: Redis;
   private logger: Logger;
@@ -17,6 +21,17 @@ export class RedisService {
         const delay = Math.min(times * 50, 2000);
         return delay;
       },
+      // Every "degrade gracefully when Redis is down" path in this codebase
+      // depends on commands *failing*. With ioredis defaults they do not fail —
+      // they queue. enableOfflineQueue buffers commands while disconnected and
+      // maxRetriesPerRequest (default 20) keeps retrying, so a caller waits tens
+      // of seconds before reaching its catch block. During a Redis outage that
+      // turned "degrade" into "hang": moderation, rate limiting and the join
+      // guard all stalled on awaits instead of taking their fallback branch.
+      connectTimeout: REDIS_CONNECT_TIMEOUT_MS,
+      commandTimeout: REDIS_COMMAND_TIMEOUT_MS,
+      enableOfflineQueue: false,
+      maxRetriesPerRequest: 1,
     });
 
     this.client.on('error', (err) => {
@@ -76,8 +91,29 @@ export class RedisService {
     } catch (err) {
       this.logger.error('acquireLock error', err);
       // Fail-open: if Redis is unavailable, allow the caller to proceed.
+      //
+      // Correct for advisory uses — deduplicating a scheduler tick, throttling a
+      // notice — where losing the lock costs duplicated work. It is NOT correct
+      // where the lock is the only thing preventing a double side effect; use
+      // acquireLockStrict() there.
       return true;
     }
+  }
+
+  /**
+   * Mutual exclusion that refuses to guess. Throws when Redis cannot answer,
+   * instead of reporting a lock it never took.
+   *
+   * The fail-open variant above quietly returned "acquired" during exactly the
+   * outage in which concurrent requests are most likely to pile up, so callers
+   * guarding a non-idempotent commit (lift a restriction, mark a session
+   * verified, spend a captcha token) believed they held a lock that did not
+   * exist. Callers here should surface a retryable error to the user rather
+   * than perform the side effect unguarded.
+   */
+  async acquireLockStrict(key: string, ttlSeconds: number): Promise<boolean> {
+    const result = await this.client.set(key, '1', 'EX', ttlSeconds, 'NX');
+    return result === 'OK';
   }
 
   async increment(key: string, ttlSeconds?: number): Promise<number> {
@@ -107,6 +143,20 @@ export class RedisService {
       remaining: Math.max(0, maxRequests - count),
       resetAt: now + windowMs,
     };
+  }
+
+  /**
+   * Liveness probe for the readiness endpoint. Never throws — callers use the
+   * boolean to decide whether to report the process as ready.
+   */
+  async ping(): Promise<boolean> {
+    try {
+      const pong = await this.client.ping();
+      return pong === 'PONG';
+    } catch (err) {
+      this.logger.warn('Redis ping failed', err);
+      return false;
+    }
   }
 
   async close(): Promise<void> {
