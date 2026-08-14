@@ -81,7 +81,7 @@ function renderLeaderboard() {
     
     el.innerHTML = 
       '<div class="lb-rank' + rankClass + '">' + rankStr + '</div>' +
-      '<div class="lb-avatar">' + p.avatarChar + '</div>' +
+      '<div class="lb-avatar">' + esc(p.avatarChar) + '</div>' +
       '<div class="lb-info">' +
         '<div class="lb-name">' + esc(p.name) + '</div>' +
         '<div class="lb-tag">Lv.' + p.level + ' ' + esc(p.title) + '</div>' +

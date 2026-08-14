@@ -13,10 +13,31 @@ import { Logger } from '../utils/logger';
 import { config } from '../config/config';
 import { TelegramBot } from '../services/TelegramBot';
 import { RateLimitMiddleware } from '../middleware/RateLimitMiddleware';
-import { sendTemporaryMessage, unrestrictUser, formatUserMention } from '../utils/telegram';
+import { redisService } from '../services/RedisService';
+import { sendTemporaryMessage, formatUserMention } from '../utils/telegram';
 import { buildMention, displayName, escapeHtml } from '../utils/markdown';
 import { avatarInitial } from '../utils/avatar';
 import { getUserAvatarDataUrl } from '../utils/avatarPhoto';
+import { assessCaptchaResult, CaptchaAssessment } from './captchaGuard';
+import {
+  acquireCommitLock,
+  handleFailedCommit,
+  releaseCommitLock,
+  unrestrictThenCommit,
+  VERIFY_COMMIT_LOCK_SECONDS,
+} from './verificationCommit';
+
+/**
+ * Cache TTL for a confirmed membership. Short-lived because the only way out of
+ * the cache is expiry — the controller sees no leave/join events.
+ */
+const MEMBER_CACHE_TTL = 60;
+/**
+ * Cache TTL for a *negative* answer. Much shorter than the positive one: a
+ * member who just joined (or whose lookup failed once) would otherwise be told
+ * "you are not in this group" for a full minute with no way to refresh it.
+ */
+const MEMBER_NEGATIVE_CACHE_TTL = 10;
 
 // ── Request body schemas ──
 
@@ -121,12 +142,25 @@ export class MiniAppController {
     });
 
     // ── Groups ──
-    fastify.post('/api/admin/groups', async (request, reply) => {
+    // Every call fans a getChatMember out over all known groups, so an
+    // unlimited endpoint is both a Bot API amplifier and a group-enumeration
+    // oracle. Budget it by IP here and by identity below.
+    fastify.post('/api/admin/groups', {
+      preHandler: async (request, reply) => {
+        if (!(await this.rateLimiter.adminApiLimit(request, reply))) return reply;
+      },
+    }, async (request, reply) => {
       const parsed = InitDataBody.safeParse(request.body);
       if (!parsed.success) return reply.code(400).send({ error: 'Invalid request', details: parsed.error.issues });
 
       const userId = this.validateInitData(parsed.data.initData);
       if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
+
+      // initData stays valid for an hour and can be replayed from any address,
+      // so the IP budget alone does not cap the fan-out per account.
+      if (!(await this.rateLimiter.userActionLimit(userId, 'admin-groups', 60000, 10))) {
+        return reply.code(429).send({ error: 'Too Many Requests', message: '请求过于频繁，请稍后再试' });
+      }
 
       const groups = await this.groupService.getAdminGroups(userId, this.bot.getBot().api);
       return reply.send({
@@ -380,7 +414,12 @@ export class MiniAppController {
     });
     // ── Verification: get session info ──
     fastify.post('/api/miniapp/verify/session', {
-      preHandler: async (request, reply) => { await this.rateLimiter.verifyPageLimit(request, reply); },
+      // Returning the reply short-circuits the lifecycle. Without it Fastify
+      // runs the handler anyway and the 429 body races a second send, so the
+      // limit costs the client nothing.
+      preHandler: async (request, reply) => {
+        if (!(await this.rateLimiter.verifyPageLimit(request, reply))) return reply;
+      },
     }, async (request, reply) => {
       const parsed = z.object({
         initData: z.string().min(1),
@@ -432,7 +471,9 @@ export class MiniAppController {
 
     // ── Verification: submit ──
     fastify.post('/api/miniapp/verify', {
-      preHandler: async (request, reply) => { await this.rateLimiter.apiVerifyLimit(request, reply); },
+      preHandler: async (request, reply) => {
+        if (!(await this.rateLimiter.apiVerifyLimit(request, reply))) return reply;
+      },
     }, async (request, reply) => {
       const parsed = z.object({
         initData: z.string().min(1),
@@ -463,6 +504,13 @@ export class MiniAppController {
         return reply.code(403).send({ success: false, message: '此验证链接不属于您' });
       }
 
+      // Expiry is checked up front, not only inside verifySession: below we lift
+      // the restriction *before* the session is closed out, and an expired
+      // window must never reach that call.
+      if (new Date() > session.expiresAt) {
+        return reply.code(400).send({ success: false, message: '验证已过期，请返回群组重新获取' });
+      }
+
       // Check attempts
       if (session.attemptCount >= 5) {
         await this.auditService.log({
@@ -475,57 +523,134 @@ export class MiniAppController {
         return reply.code(429).send({ success: false, message: '尝试次数过多，请稍后再试' });
       }
 
-      // Increment attempts
-      await this.verificationService.incrementAttempts(session.id);
+      // Verify provider. Attempts are charged *after* the provider answers, and
+      // only for a genuine rejection: counting one up front meant every
+      // infrastructure failure — whose own message asks the user to retry —
+      // walked the user into the too-many-attempts branch above.
+      let assessment: CaptchaAssessment;
+      let providerLabel: string;
+      let providerErrors: string[] | undefined;
 
-      // Verify Provider
       if (hcaptchaToken) {
         const hcResult = await this.hcaptchaService.verify(hcaptchaToken, remoteIp);
-        if (!hcResult.success) {
-          this.logger.warn('Mini App HCaptcha verification failed', {
-            userId, sessionId,
-            errors: hcResult['error-codes'],
-          });
-          return reply.code(400).send({ success: false, message: 'hCaptcha 人机验证失败，请重试' });
-        }
-      } else if (turnstileToken) {
-        const turnstileResult = await this.turnstileService.verify(turnstileToken, remoteIp);
-        if (!turnstileResult.success) {
-          this.logger.warn('Mini App Turnstile verification failed', {
-            userId, sessionId,
-            errors: turnstileResult['error-codes'],
-          });
-          return reply.code(400).send({ success: false, message: 'CF 人机验证失败，请重试' });
-        }
+        providerErrors = hcResult['error-codes'];
+        providerLabel = 'hCaptcha';
+        assessment = await assessCaptchaResult({
+          provider: 'hcaptcha',
+          result: hcResult,
+          token: hcaptchaToken,
+          sessionId: session.id,
+          // Our Mini App widget code always binds the session id where the
+          // provider supports it; hCaptcha has no cData equivalent.
+          requireCdata: true,
+        });
+      } else {
+        const turnstileResult = await this.turnstileService.verify(turnstileToken as string, remoteIp);
+        providerErrors = turnstileResult['error-codes'];
+        providerLabel = 'CF';
+        assessment = await assessCaptchaResult({
+          provider: 'turnstile',
+          result: turnstileResult,
+          token: turnstileToken as string,
+          sessionId: session.id,
+          requireCdata: true,
+        });
       }
 
-      // Mark session as verified
-      const verified = await this.verificationService.verifySession(
-        session.id, remoteIp, request.headers['user-agent'],
-      );
-      if (!verified) {
-        return reply.code(400).send({ success: false, message: '验证失败，请重试' });
+      if (!assessment.ok) {
+        if (assessment.kind === 'infrastructure') {
+          // Undecidable, not failed: no attempt is charged and no verdict is
+          // implied about the user.
+          this.logger.error('Mini App captcha could not be assessed', {
+            userId, sessionId, reason: assessment.reason,
+          });
+          return reply.code(503).send({ success: false, message: '验证服务暂时不可用，请稍后重试' });
+        }
+
+        await this.verificationService.incrementAttempts(session.id);
+        this.logger.warn('Mini App captcha verification failed', {
+          userId, sessionId,
+          provider: providerLabel,
+          reason: assessment.reason,
+          errors: providerErrors,
+        });
+        return reply.code(400).send({ success: false, message: `${providerLabel} 人机验证失败，请重试` });
       }
 
-      // Remove restrictions from user
+      // Single-flight the commit. Concurrent submits for one session would
+      // otherwise each unrestrict, each flip the session to verified and each
+      // announce it. The lock is taken only after the captcha passed, so a user
+      // retrying a failed challenge is never blocked by their own attempt.
+      const lockResult = await acquireCommitLock(`verify-commit:${session.id}`, VERIFY_COMMIT_LOCK_SECONDS);
+      if (lockResult.state === 'busy') {
+        return reply.code(409).send({ success: false, message: '验证正在处理中，请稍候' });
+      }
+      if (lockResult.state === 'unavailable') {
+        // No lock, no commit: the alternative is two concurrent submits both
+        // unrestricting and both announcing.
+        return reply.code(503).send({ success: false, message: '验证服务暂时不可用，请稍后重试' });
+      }
+      const commitLock = lockResult.lock;
+
       const chatId = Number(session.groupId);
       const numericUserId = Number(session.userId);
 
-      try {
-        await unrestrictUser(this.bot.getBot(), chatId, numericUserId);
-        this.logger.info('User verified via Mini App and unrestricted', { userId, groupId: session.groupId });
-      } catch (error) {
-        this.logger.error('Failed to unrestrict user', error);
+      // Unrestrict and record the verification as one reversible step: if the
+      // session write loses its race the mute goes back on, so a submission
+      // timed to land just as the session expires cannot leave an unverified
+      // account permanently able to speak.
+      const commit = await unrestrictThenCommit({
+        bot: this.bot.getBot(),
+        chatId,
+        userId: numericUserId,
+        commit: () => this.verificationService.verifySession(
+          session.id, remoteIp, request.headers['user-agent'],
+        ),
+      });
+
+      if (commit.status !== 'committed') {
+        // The session is still pending, so let the user retry as soon as the
+        // underlying problem is fixed.
+        await releaseCommitLock(commitLock);
+
+        const failure = await handleFailedCommit({
+          bot: this.bot.getBot(),
+          chatId,
+          groupId: session.groupId,
+          userId: session.userId,
+          result: commit,
+          source: 'Mini App',
+          audit: async ({ action, details }) => {
+            try {
+              await this.auditService.log({
+                groupId: session.groupId, userId: session.userId, action, details, ip: remoteIp,
+              });
+            } catch (error) {
+              this.logger.error(`Failed to write ${action} audit log`, error);
+            }
+          },
+          mention: async () => formatUserMention(
+            await this.userService.findById(session.userId), session.userId,
+          ),
+        });
+
+        return reply.code(failure.statusCode).send({ success: false, message: failure.message });
       }
 
+      this.logger.info('User verified via Mini App and unrestricted', { userId, groupId: session.groupId });
+
       // Log verification
-      await this.auditService.log({
-        groupId: session.groupId,
-        userId: session.userId,
-        action: 'user_verified',
-        details: 'Verification completed via Mini App',
-        ip: remoteIp,
-      });
+      try {
+        await this.auditService.log({
+          groupId: session.groupId,
+          userId: session.userId,
+          action: 'user_verified',
+          details: 'Verification completed via Mini App',
+          ip: remoteIp,
+        });
+      } catch (error) {
+        this.logger.error('Failed to write user_verified audit log', error);
+      }
 
       // Send success notification to group (auto-deletes after 30s)
       const group = await this.groupService.findById(session.groupId);
@@ -556,7 +681,9 @@ export class MiniAppController {
 
     // ── Leaderboard ──
     fastify.post('/api/miniapp/leaderboard', {
-      preHandler: async (request, reply) => { await this.rateLimiter.verifyPageLimit(request, reply); },
+      preHandler: async (request, reply) => {
+        if (!(await this.rateLimiter.verifyPageLimit(request, reply))) return reply;
+      },
     }, async (request, reply) => {
       const parsed = z.object({
         initData: z.string().min(1),
@@ -569,7 +696,16 @@ export class MiniAppController {
 
       const { groupId } = parsed.data;
 
-      // Ensure the group exists
+      // Membership gate *first*. Being a valid Telegram user used to be enough:
+      // anyone who learned a group id could read its roster and stats.
+      // Fail-closed — if Telegram cannot confirm membership we refuse rather
+      // than leak it. It also runs before any lookup that could answer a
+      // different way for a known group than for an unknown one: the 404 that
+      // used to come first was a free "does this group exist?" oracle.
+      if (!(await this.isGroupMember(Number(groupId), Number(userId)))) {
+        return reply.code(403).send({ error: 'not_a_member', message: '您不在该群组内，无法查看排行榜' });
+      }
+
       const group = await this.groupService.findById(groupId);
       if (!group) return reply.code(404).send({ error: 'Group not found' });
 
@@ -592,8 +728,9 @@ export class MiniAppController {
         // Never surface the raw numeric id (happens when the users table has no
         // row for a member who only ever sent messages).
         const name = displayName(user, p.userId);
+        // The raw numeric id stays server-side: the client renders none of it,
+        // and shipping it turned the leaderboard into a user-id harvester.
         return {
-          userId: p.userId,
           name,
           username: user?.username,
           avatarChar: avatarInitial(name.replace(/^@/, '')),
@@ -607,7 +744,9 @@ export class MiniAppController {
       const xpList = topXpProfiles.map(mapProfile);
       const coinsList = topCoinsProfiles.map(mapProfile);
 
-      // Current user's info
+      // Current user's info. Creating the profile row here is only safe because
+      // membership was confirmed above — the unguarded version seeded isActive
+      // rows for outsiders and polluted the ranking.
       const myProfile = await this.levelService.getOrCreateProfile(userId, groupId);
       const myXpRank = await this.levelService.getRank(userId, groupId);
       const myCoinsRank = await this.levelService.getCoinsRank(userId, groupId);
@@ -626,6 +765,50 @@ export class MiniAppController {
         }
       });
     });
+  }
+
+  /**
+   * Is this user actually in the chat? Cached briefly, and fail-closed: an
+   * unreachable Bot API must not turn a membership check into a rubber stamp.
+   */
+  private async isGroupMember(chatId: number, userId: number): Promise<boolean> {
+    const cacheKey = `member:${chatId}:${userId}`;
+
+    try {
+      const cached = await redisService.get(cacheKey);
+      if (cached !== null) return cached === '1';
+    } catch (error) {
+      this.logger.warn('Membership cache read failed, asking Telegram', error);
+    }
+
+    try {
+      const member = await this.bot.getBot().api.getChatMember(chatId, userId);
+      // 'restricted' still counts while is_member holds — a muted member is a
+      // member. 'left' / 'kicked' do not.
+      const isMember =
+        member.status === 'creator' ||
+        member.status === 'administrator' ||
+        member.status === 'member' ||
+        (member.status === 'restricted' && member.is_member);
+
+      try {
+        // A "no" expires quickly on purpose — see MEMBER_NEGATIVE_CACHE_TTL.
+        await redisService.set(
+          cacheKey,
+          isMember ? '1' : '0',
+          isMember ? MEMBER_CACHE_TTL : MEMBER_NEGATIVE_CACHE_TTL,
+        );
+      } catch (error) {
+        this.logger.debug('Could not cache membership result', error);
+      }
+
+      return isMember;
+    } catch (error) {
+      // Not cached: a Bot API blip must not pin a real member out for a whole
+      // cache window.
+      this.logger.warn('getChatMember failed, denying membership', { chatId, userId, error });
+      return false;
+    }
   }
 
   private validateInitData(initData: string | undefined): string | null {

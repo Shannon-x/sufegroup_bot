@@ -4,7 +4,11 @@ import { z } from 'zod';
 import { ChatwootVerificationService } from '../services/ChatwootVerificationService';
 import { TurnstileService } from '../services/TurnstileService';
 import { HCaptchaService } from '../services/HCaptchaService';
+import { RateLimitMiddleware } from '../middleware/RateLimitMiddleware';
 import { config } from '../config/config';
+import { Logger } from '../utils/logger';
+import { assessCaptchaResult, CaptchaAssessment } from './captchaGuard';
+import { acquireCommitLock, releaseCommitLock, VERIFY_COMMIT_LOCK_SECONDS } from './verificationCommit';
 
 const MiniAppSessionBody = z.object({
   initData: z.string().min(1),
@@ -22,15 +26,27 @@ export class ChatwootVerificationController {
   private verificationService: ChatwootVerificationService;
   private turnstileService: TurnstileService;
   private hcaptchaService: HCaptchaService;
+  private rateLimiter: RateLimitMiddleware;
+  private logger: Logger;
 
   constructor() {
     this.verificationService = new ChatwootVerificationService();
     this.turnstileService = new TurnstileService();
     this.hcaptchaService = new HCaptchaService();
+    this.rateLimiter = new RateLimitMiddleware();
+    this.logger = new Logger('ChatwootVerificationController');
   }
 
   async register(fastify: FastifyInstance) {
-    fastify.post('/api/miniapp/chatwoot/verify/session', async (request, reply) => {
+    // Same budgets as the group verification endpoints — this gate hands out the
+    // same kind of pass, so leaving it unlimited let codes be redeemed in bulk.
+    // Returning the reply short-circuits the lifecycle; without it Fastify runs
+    // the handler anyway and the 429 body races a second send.
+    fastify.post('/api/miniapp/chatwoot/verify/session', {
+      preHandler: async (request, reply) => {
+        if (!(await this.rateLimiter.verifyPageLimit(request, reply))) return reply;
+      },
+    }, async (request, reply) => {
       const parsed = MiniAppSessionBody.safeParse(request.body);
       if (!parsed.success) return reply.code(400).send({ error: 'Invalid request' });
 
@@ -67,7 +83,11 @@ export class ChatwootVerificationController {
       });
     });
 
-    fastify.post('/api/miniapp/chatwoot/verify', async (request, reply) => {
+    fastify.post('/api/miniapp/chatwoot/verify', {
+      preHandler: async (request, reply) => {
+        if (!(await this.rateLimiter.apiVerifyLimit(request, reply))) return reply;
+      },
+    }, async (request, reply) => {
       const parsed = MiniAppVerifyBody.safeParse(request.body);
       if (!parsed.success) return reply.code(400).send({ success: false, message: 'Invalid request' });
 
@@ -93,22 +113,75 @@ export class ChatwootVerificationController {
         return reply.code(400).send({ success: false, message: '请完成人机验证' });
       }
 
-      await this.verificationService.incrementAttempts(session.id);
+      // Same acceptance rules as the group endpoints — this gate hands out an
+      // equivalent pass, and checking only `success` here made it the weakest
+      // of the three. Attempts are charged only for a genuine rejection.
+      let assessment: CaptchaAssessment;
+      let providerLabel: string;
 
       if (hcaptchaToken) {
         const result = await this.hcaptchaService.verify(hcaptchaToken, request.ip);
-        if (!result.success) return reply.code(400).send({ success: false, message: 'hCaptcha 人机验证失败，请重试' });
-      } else if (turnstileToken) {
-        const result = await this.turnstileService.verify(turnstileToken, request.ip);
-        if (!result.success) return reply.code(400).send({ success: false, message: '人机验证失败，请重试' });
+        providerLabel = 'hCaptcha';
+        assessment = await assessCaptchaResult({
+          provider: 'hcaptcha',
+          result,
+          token: hcaptchaToken,
+          sessionId: session.id,
+          requireCdata: true,
+        });
+      } else {
+        const result = await this.turnstileService.verify(turnstileToken as string, request.ip);
+        providerLabel = 'CF';
+        assessment = await assessCaptchaResult({
+          provider: 'turnstile',
+          result,
+          token: turnstileToken as string,
+          sessionId: session.id,
+          // Served by the same Mini App page, whose widget always sets cData.
+          requireCdata: true,
+        });
       }
+
+      if (!assessment.ok) {
+        if (assessment.kind === 'infrastructure') {
+          this.logger.error('Chatwoot captcha could not be assessed', {
+            sessionId, reason: assessment.reason,
+          });
+          return reply.code(503).send({ success: false, message: '验证服务暂时不可用，请稍后重试' });
+        }
+
+        await this.verificationService.incrementAttempts(session.id);
+        this.logger.warn('Chatwoot captcha verification failed', {
+          sessionId, provider: providerLabel, reason: assessment.reason,
+        });
+        return reply.code(400).send({ success: false, message: `${providerLabel} 人机验证失败，请重试` });
+      }
+
+      // Single-flight the commit so concurrent submits can't redeem the same
+      // session twice. Strict: a fail-open lock stops being a guard exactly
+      // when Redis is down and requests pile up.
+      const lockResult = await acquireCommitLock(
+        `chatwoot-verify-commit:${session.id}`, VERIFY_COMMIT_LOCK_SECONDS,
+      );
+      if (lockResult.state === 'busy') {
+        return reply.code(409).send({ success: false, message: '验证正在处理中，请稍候' });
+      }
+      if (lockResult.state === 'unavailable') {
+        return reply.code(503).send({ success: false, message: '验证服务暂时不可用，请稍后重试' });
+      }
+      const commitLock = lockResult.lock;
 
       const verified = await this.verificationService.verifySession(
         session.id,
         request.ip,
         request.headers['user-agent']
       );
-      if (!verified) return reply.code(400).send({ success: false, message: '验证失败，请重试' });
+      if (!verified) {
+        // Release rather than sitting on the lock for its full TTL: the session
+        // is still pending and the user is being told to retry.
+        await releaseCommitLock(commitLock);
+        return reply.code(400).send({ success: false, message: '验证失败，请重试' });
+      }
 
       return reply.send({
         success: true,
