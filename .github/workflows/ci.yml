@@ -1,4 +1,4 @@
-# CI: 每次 push/PR 自动运行类型检查和 lint
+# CI: 类型检查、lint、单元测试、迁移冒烟、依赖与密钥扫描
 name: CI
 
 on:
@@ -9,6 +9,7 @@ on:
 
 jobs:
   check:
+    name: 类型检查 / Lint / 单元测试
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,3 +26,103 @@ jobs:
 
       - name: ESLint 检查
         run: npm run lint --if-present
+
+      # 入群防护链路的回归测试在这里跑。此前 CI 只做 tsc + lint，
+      # 单测存在却从不执行，"CI 全绿"并不代表安全链路没被改坏。
+      - name: 单元测试
+        run: npm test
+
+      - name: 构建
+        run: npm run build
+
+  migrations:
+    name: 迁移冒烟（真实 Postgres）
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: ci-test-password
+          POSTGRES_DB: telegram_bot
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      # 对全新数据库跑一遍全部迁移。InitialSchema 曾经在缺少 uuid 扩展时
+      # 直接失败，而启动代码把迁移异常吞掉后照常启动，线上表现为
+      # "容器健康、机器人在线、实际完全不管入群"。这一步让该类问题在 CI 暴露。
+      - name: 对全新数据库执行迁移
+        run: npx typeorm migration:run -d dist/config/database.js
+        env:
+          NODE_ENV: test
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USERNAME: postgres
+          DB_PASSWORD: ci-test-password
+          DB_DATABASE: telegram_bot
+          BOT_TOKEN: 123456:CI_PLACEHOLDER_TOKEN
+          JWT_SECRET: ci-placeholder-secret-at-least-32-chars-long
+          TURNSTILE_SITE_KEY: ci-placeholder
+          TURNSTILE_SECRET_KEY: ci-placeholder
+
+      # 迁移必须可重复执行：重跑一次应当是无操作而不是报错。
+      - name: 迁移幂等性检查
+        run: npx typeorm migration:run -d dist/config/database.js
+        env:
+          NODE_ENV: test
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USERNAME: postgres
+          DB_PASSWORD: ci-test-password
+          DB_DATABASE: telegram_bot
+          BOT_TOKEN: 123456:CI_PLACEHOLDER_TOKEN
+          JWT_SECRET: ci-placeholder-secret-at-least-32-chars-long
+          TURNSTILE_SITE_KEY: ci-placeholder
+          TURNSTILE_SECRET_KEY: ci-placeholder
+
+  audit:
+    name: 依赖漏洞审计
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # 只审计生产依赖。阈值定在 high：已知的 3 个 high 需要 fastify v4→v5
+      # 迁移才能消除，迁移完成后应把阈值收紧到 moderate。
+      - name: npm audit（生产依赖）
+        run: npm audit --omit=dev --audit-level=high
+
+  secrets:
+    name: 密钥扫描
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks 需要完整历史才能扫描既往提交——本仓库历史中确实
+          # 提交过真实 Bot Token，必须防止再次发生。
+          fetch-depth: 0
+
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
