@@ -54,6 +54,16 @@ const envSchema = z.object({
   // Bot Configuration
   DEFAULT_VERIFY_TTL_MINUTES: z.string().transform(Number).default('10'),
   DEFAULT_AUTO_ACTION: z.enum(['mute', 'kick']).default('mute'),
+  // Zero means a verification timeout is a classic kick: remove the member,
+  // then immediately lift the ban so a legitimate user can rejoin and retry.
+  // Positive values intentionally keep the member out for a short cooling-off
+  // period; telegram.ts clamps them above Telegram's 30-second permanent-ban
+  // boundary.
+  VERIFICATION_REJOIN_COOLDOWN_SECONDS: z
+    .string()
+    .transform(Number)
+    .pipe(z.number().int().min(0).max(86400))
+    .default('60'),
   DEFAULT_RATE_LIMIT_WINDOW_MS: z.string().transform(Number).default('60000'),
   DEFAULT_RATE_LIMIT_MAX_REQUESTS: z.string().transform(Number).default('10'),
   
@@ -164,6 +174,7 @@ export const config = {
   defaults: {
     verifyTtlMinutes: env.DEFAULT_VERIFY_TTL_MINUTES,
     autoAction: env.DEFAULT_AUTO_ACTION,
+    verificationRejoinCooldownSeconds: env.VERIFICATION_REJOIN_COOLDOWN_SECONDS,
     rateLimitWindowMs: env.DEFAULT_RATE_LIMIT_WINDOW_MS,
     rateLimitMaxRequests: env.DEFAULT_RATE_LIMIT_MAX_REQUESTS,
   },

@@ -206,11 +206,19 @@ export class VerificationController {
             await sendTemporaryMessage(
               this.bot.getBot(),
               Number(session.groupId),
-              `❌ ${userMention} 验证失败（尝试次数过多），已被移除。`,
+              `❌ ${userMention} 验证失败（尝试次数过多），已被移除。` +
+                (config.defaults.verificationRejoinCooldownSeconds > 0
+                  ? `${config.defaults.verificationRejoinCooldownSeconds} 秒后可重新加入并再次验证。`
+                  : '可重新加入并再次验证。'),
               { parse_mode: 'HTML' }
             );
 
-            await kickUser(this.bot.getBot(), Number(session.groupId), Number(session.userId));
+            await kickUser(
+              this.bot.getBot(),
+              Number(session.groupId),
+              Number(session.userId),
+              config.defaults.verificationRejoinCooldownSeconds
+            );
           } catch (error) {
             this.logger.error('Failed to handle too-many-attempts', error);
           }

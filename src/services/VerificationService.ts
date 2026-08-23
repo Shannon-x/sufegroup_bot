@@ -339,7 +339,12 @@ export class VerificationService {
 
     // kick policy: the removal must succeed before anything is announced or the
     // session is closed. A throw here propagates to recordRemovalFailure().
-    await kickUser(bot, chatId, userId);
+    await kickUser(
+      bot,
+      chatId,
+      userId,
+      config.defaults.verificationRejoinCooldownSeconds
+    );
 
     await this.finalizeSession(session, 'removed');
     await this.auditTimeout(session, 'kick');
@@ -449,7 +454,10 @@ export class VerificationService {
     const userMention = formatUserMention(session.user, session.userId);
     const text =
       action === 'kick'
-        ? `⏰ ${userMention} 未在规定时间内完成验证，已被移除。`
+        ? config.defaults.verificationRejoinCooldownSeconds > 0
+          ? `⏰ ${userMention} 未在规定时间内完成验证，已被移除。` +
+            `${config.defaults.verificationRejoinCooldownSeconds} 秒后可重新加入并再次验证。`
+          : `⏰ ${userMention} 未在规定时间内完成验证，已被移除，可重新加入并再次验证。`
         : `⏰ ${userMention} 未在规定时间内完成验证，已被禁言。`;
 
     try {
