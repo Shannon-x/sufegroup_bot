@@ -151,6 +151,25 @@ const SPAM_PATTERNS: Array<{ pattern: RegExp; weight: number; label: string }> =
   { pattern: /[关注进加入].*[频道群组channel]|频道.*[推荐福利资源]/i, weight: 20, label: '频道推广' },
   // Medicine / health scam
   { pattern: /[壮阳减肥丰胸].*[产品药丸胶囊]|祖传秘方|包治百病/i, weight: 30, label: '虚假广告' },
+  // Get-rich-quick recruitment. This vocabulary was a blind spot: an ad bot
+  // posting a wall of buttons promising an income scored zero, because none of
+  // the patterns above cover "no capital required" / "get rich" phrasing and
+  // the post carries no keyword any other rule looks for. Deliberate
+  // misspellings are common here ("项木" for 项目), so the patterns key on the
+  // parts of the phrase the author cannot afford to disguise.
+  {
+    pattern: /[0０零无]本金|免费入[金场]|躺[着平]赚|包[教赚]包会|带你[飞致]富|财富[入密]口|致富之路|翻身.{0,4}找我|带你提(迈巴赫|保时捷|兰博基尼|豪车)/i,
+    weight: 30,
+    label: '诈骗',
+  },
+  // Income claims. Deliberately lighter: a number of this shape can occur in
+  // ordinary conversation, so it raises suspicion rather than deciding on its
+  // own. The negative lookahead keeps counts and measurements out.
+  {
+    pattern: /一天[^，。！？\n]{0,6}[\d几两三四五六七八九十百]+[万千](?![次步个米字条行人])|[日月]入[^，。\n]{0,4}[\d几]*[万千]/i,
+    weight: 25,
+    label: '诈骗',
+  },
   // Repetitive emojis (common spam style)
   { pattern: /(.)\1{7,}|([🔥💰🎁🎉💎🚀✅].*){5,}/u, weight: 15, label: '刷屏' },
 ];

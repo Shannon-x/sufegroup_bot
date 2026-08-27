@@ -61,7 +61,7 @@ export class MembershipHandler {
 
     // Check if user joined
     if (this.isMemberJoined(old_chat_member, new_chat_member)) {
-      await this.processNewMember(ctx, new_chat_member.user, chat);
+      await this.processNewMember(ctx, new_chat_member.user, chat, update.from);
       return;
     }
 
@@ -98,7 +98,7 @@ export class MembershipHandler {
           userId: memberId,
           groupId
         });
-        await this.processNewMember(ctx, new_chat_member.user, chat);
+        await this.processNewMember(ctx, new_chat_member.user, chat, update.from);
       }
       return;
     }
@@ -111,7 +111,7 @@ export class MembershipHandler {
         userId: new_chat_member.user.id,
         chatId: chat.id
       });
-      await this.processNewMember(ctx, new_chat_member.user, chat);
+      await this.processNewMember(ctx, new_chat_member.user, chat, update.from);
     }
   }
 
@@ -119,7 +119,7 @@ export class MembershipHandler {
     if (!ctx.message?.new_chat_members || !ctx.chat) return;
 
     for (const member of ctx.message.new_chat_members) {
-      await this.processNewMember(ctx, member, ctx.chat);
+      await this.processNewMember(ctx, member, ctx.chat, ctx.from);
     }
   }
 
@@ -208,7 +208,7 @@ export class MembershipHandler {
    * in. Any unexpected failure now falls back to muting the newcomer rather
    * than letting them through.
    */
-  async processNewMember(ctx: MyContext, telegramUser: any, chat: any) {
+  async processNewMember(ctx: MyContext, telegramUser: any, chat: any, addedBy?: { id: number; first_name?: string; username?: string }) {
     const userId = telegramUser.id.toString();
     const chatId = chat.id.toString();
     const lockKey = `${userId}-${chatId}`;
@@ -241,18 +241,7 @@ export class MembershipHandler {
       // apply — but this is no longer a silent return. Bots added by ordinary
       // members are a common spam vector, so the event is audited and visible.
       if (telegramUser.is_bot) {
-        this.logger.info('Bot joined group, verification not applicable', {
-          botId: userId,
-          groupId: chatId,
-        });
-        await this.bestEffort('audit bot join', () =>
-          this.auditService.log({
-            groupId: group.id,
-            userId: user.id,
-            action: 'bot_joined',
-            details: `Bot @${user.username || user.firstName} was added to the group`,
-          })
-        );
+        await this.handleBotJoin(ctx, Number(telegramUser.id), user, group, addedBy);
         return;
       }
 
@@ -514,6 +503,137 @@ export class MembershipHandler {
       this.logger.error('Error applying restrictions', { groupId, userId, error: message });
       return { ok: false, error: message };
     }
+  }
+
+  /**
+   * Decide what to do about a bot that was just added to the group.
+   *
+   * A captcha is meaningless for a bot, so verification never applied — but the
+   * previous behaviour of simply recording the event and moving on is what let
+   * advertising bots operate. Anyone who can invite members could bring one in,
+   * and it would then post freely: the group in the report that prompted this
+   * had a bot pushing a dozen ad buttons at a time.
+   *
+   * The rule is about *who* invited it, not about the bot itself. An admin
+   * adding a bot is ordinary administration and is left alone. A regular member
+   * adding one is not something they should be able to do unilaterally, so the
+   * bot is removed and the admins are told who brought it in.
+   */
+  private async handleBotJoin(
+    ctx: MyContext,
+    botId: number,
+    user: { id: string; firstName: string; username?: string | null },
+    group: { id: string; title: string },
+    addedBy?: { id: number; first_name?: string; username?: string }
+  ): Promise<void> {
+    // Never act on ourselves. Compared against the id Telegram sent, not the
+    // one that came back from the database — the update is the authority on
+    // who joined, and a stale or mismatched row must not be able to point this
+    // at the wrong account.
+    if (botId === ctx.me?.id) return;
+
+    const policy = await this.resolveBotPolicy(group.id);
+    if (policy === 'allow') {
+      await this.auditBotJoin(group, user, 'policy=allow');
+      return;
+    }
+
+    // No actor means we could not attribute the invite (it can be absent on
+    // some update shapes). Removing on a guess would let a missing field kick
+    // a bot an owner had deliberately installed, so this only reports.
+    if (!addedBy) {
+      this.logger.warn('Bot joined without an identifiable inviter', {
+        botId: user.id,
+        groupId: group.id,
+      });
+      await this.auditBotJoin(group, user, 'inviter unknown, not removed');
+      return;
+    }
+
+    const inviterIsAdmin = await this.groupService.isAdminCached(
+      Number(group.id),
+      addedBy.id,
+      ctx.api
+    );
+
+    if (inviterIsAdmin) {
+      await this.auditBotJoin(group, user, `invited by admin ${addedBy.id}`);
+      return;
+    }
+
+    const botLabel = user.username ? `@${user.username}` : user.firstName;
+    const inviterLabel = addedBy.username
+      ? `@${addedBy.username}`
+      : addedBy.first_name || String(addedBy.id);
+
+    try {
+      await ctx.api.banChatMember(Number(group.id), botId);
+      this.logger.info('Removed a bot added by a non-admin', {
+        botId: user.id,
+        groupId: group.id,
+        invitedBy: addedBy.id,
+      });
+      await this.auditBotJoin(group, user, `removed; invited by non-admin ${addedBy.id}`);
+
+      await this.bestEffort('notify unauthorised bot removal', () =>
+        ctx.api.sendMessage(
+          Number(group.id),
+          `🤖 已移除未授权机器人 <b>${escapeHtml(botLabel)}</b>\n` +
+            `邀请者: ${escapeHtml(inviterLabel)}（非管理员）\n\n` +
+            `如需添加机器人，请由管理员操作。`,
+          { parse_mode: 'HTML' }
+        )
+      );
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      this.logger.error('Could not remove an unauthorised bot', {
+        botId: user.id,
+        groupId: group.id,
+        reason,
+      });
+      await this.auditBotJoin(group, user, `removal failed: ${reason}`);
+
+      // Say so rather than staying silent: an admin has to act, and the group
+      // must not be left believing the bot was handled.
+      await this.bestEffort('notify unauthorised bot removal failure', () =>
+        ctx.api.sendMessage(
+          Number(group.id),
+          `⚠️ 检测到未授权机器人 <b>${escapeHtml(botLabel)}</b>（由 ${escapeHtml(inviterLabel)} 邀请），` +
+            `但机器人权限不足，无法自动移除。请管理员手动处理。`,
+          { parse_mode: 'HTML' }
+        )
+      );
+    }
+  }
+
+  /** Group policy for bots invited by ordinary members. */
+  private async resolveBotPolicy(groupId: string): Promise<'remove' | 'allow'> {
+    try {
+      const settings = await this.groupService.getSettings(groupId);
+      const configured = (settings?.customSettings as Record<string, unknown> | undefined)?.botPolicy;
+      return configured === 'allow' ? 'allow' : 'remove';
+    } catch (error) {
+      // Defaulting to 'remove' on a lookup failure would delete bots on an
+      // outage; defaulting to 'allow' only postpones a decision an admin can
+      // still make by hand.
+      this.logger.warn('Could not read bot policy, leaving the bot in place', error);
+      return 'allow';
+    }
+  }
+
+  private async auditBotJoin(
+    group: { id: string },
+    user: { id: string; firstName: string; username?: string | null },
+    outcome: string
+  ): Promise<void> {
+    await this.bestEffort('audit bot join', () =>
+      this.auditService.log({
+        groupId: group.id,
+        userId: user.id,
+        action: 'bot_joined',
+        details: `Bot @${user.username || user.firstName} was added to the group (${outcome})`,
+      })
+    );
   }
 
   /**
