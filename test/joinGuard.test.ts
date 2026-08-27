@@ -84,7 +84,7 @@ function makeHarness(overrides: Record<string, any> = {}) {
     levelService as any
   );
 
-  const ctx = { api } as any;
+  const ctx = { api, me: { id: 42 } } as any;
   const telegramUser = { id: Number(userId), is_bot: false, first_name: 'Alice', username: 'alice' };
   const chat = { id: Number(groupId), type: 'supergroup', title: 'Test Group' };
 

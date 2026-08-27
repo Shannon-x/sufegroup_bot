@@ -76,7 +76,13 @@ export class ContentFilterHandler {
     // visible characters missed the most common payload of all — a `text_link`
     // entity whose anchor text says "点击查看" while pointing at the ad.
     const text = ctx.message?.text || ctx.message?.caption || '';
-    const scanTarget = [text, ...this.collectEntityUrls(ctx)].filter(Boolean).join(SCAN_SEPARATOR);
+    const scanTarget = [
+      text,
+      ...this.collectEntityUrls(ctx),
+      ...this.collectKeyboardContent(ctx),
+    ]
+      .filter(Boolean)
+      .join(SCAN_SEPARATOR);
 
     // 1. Check forwarded messages (channel / group / hidden sender)
     if (filterConfig.blockForwards) {
@@ -136,6 +142,42 @@ export class ContentFilterHandler {
       urls.add(entity.url);
     }
     return [...urls];
+  }
+
+  /**
+   * Content carried by an inline keyboard.
+   *
+   * This was a blind spot with a real-world cost: an advertising bot posts one
+   * innocuous line of text and hangs the entire payload off the buttons — a
+   * dozen URL buttons whose captions are the advertisement itself ("0 本金搬砖",
+   * "一天七八万随便拿"). Nothing in the message text trips a rule, so the filter
+   * passed it, while every member saw a screen full of ads.
+   *
+   * Both halves are collected. The captions are what a reader actually reads,
+   * so they belong in the spam-pattern scan, and the targets are links that no
+   * link rule had ever been applied to.
+   */
+  private collectKeyboardContent(ctx: MyContext): string[] {
+    const keyboard = ctx.message?.reply_markup?.inline_keyboard;
+    if (!keyboard) return [];
+
+    const parts = new Set<string>();
+    for (const row of keyboard) {
+      for (const button of row) {
+        if (button.text) parts.add(button.text);
+        if ('url' in button && button.url) parts.add(button.url);
+        if ('login_url' in button && button.login_url?.url) parts.add(button.login_url.url);
+        // An inline-query button prefills a search in another chat; the payload
+        // is attacker-controlled text that the client shows on tap.
+        if ('switch_inline_query' in button && button.switch_inline_query) {
+          parts.add(button.switch_inline_query);
+        }
+        if ('switch_inline_query_chosen_chat' in button && button.switch_inline_query_chosen_chat?.query) {
+          parts.add(button.switch_inline_query_chosen_chat.query);
+        }
+      }
+    }
+    return [...parts];
   }
 
   /**
