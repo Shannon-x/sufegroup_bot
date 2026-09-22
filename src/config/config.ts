@@ -67,12 +67,29 @@ const envSchema = z.object({
   DEFAULT_RATE_LIMIT_WINDOW_MS: z.string().transform(Number).default('60000'),
   DEFAULT_RATE_LIMIT_MAX_REQUESTS: z.string().transform(Number).default('10'),
   
-  // Reverse-proxy trust. Fastify's `trustProxy` decides how X-Forwarded-For is
-  // collapsed into request.ip. Blanket `true` trusts the whole chain, which lets
-  // a client forge its apparent source IP if the proxy passes the header
-  // through. Set this to the proxy's address/subnet (or a hop count) in
-  // production; `false` is correct when the app is directly exposed.
-  TRUST_PROXY: z.string().default('false'),
+  // Reverse-proxy trust: which peers may supply X-Forwarded-For. Fastify turns
+  // it into request.ip, which the Telegram webhook IP allowlist checks.
+  //
+  // The default trusts loopback and private (RFC 1918) addresses, which is what
+  // the shipped deployment needs: nginx on the host reaches the container
+  // through Docker's bridge, so the container sees a 172.x.x.1 peer. The
+  // previous default, `false`, took that bridge address as the client — never
+  // a Telegram address — so the allowlist rejected every webhook update and the
+  // bot silently received nothing: no join verification, no commands, no
+  // filtering. The port is bound to 127.0.0.1, so only the host's own proxy can
+  // reach it to supply the header.
+  //
+  // Use `false` only when the app is directly exposed with no proxy in front.
+  // Hop counts are rejected: current Fastify treats a numeric value as "trust
+  // no one", because a count alone cannot validate the immediate peer.
+  TRUST_PROXY: z
+    .string()
+    .default('loopback,uniquelocal')
+    .refine((value) => !/^\s*\d+\s*$/.test(value), {
+      message:
+        'TRUST_PROXY no longer accepts a hop count (Fastify now trusts no one for numeric values, ' +
+        'which silently rejects every webhook). Use the proxy address or a range, e.g. "loopback,uniquelocal".',
+    }),
 
   // Combot Anti-Spam (https://cas.chat) — a shared blocklist of accounts
   // reported for spam across many Telegram groups. Checked when someone joins,
@@ -121,12 +138,11 @@ if (!parsed.success) {
 const env = parsed.data;
 
 /** Parse TRUST_PROXY into the shape Fastify expects. */
-function parseTrustProxy(value: string): boolean | string | number {
-  if (value === 'true') return true;
-  if (value === 'false') return false;
-  const asNumber = Number(value);
-  if (!Number.isNaN(asNumber) && value.trim() !== '') return asNumber;
-  return value; // IP or comma-separated subnet list
+function parseTrustProxy(value: string): boolean | string {
+  const trimmed = value.trim();
+  if (trimmed === 'true') return true;
+  if (trimmed === 'false') return false;
+  return trimmed; // Address, CIDR, named range, or a comma-separated list of them
 }
 
 export const config = {
