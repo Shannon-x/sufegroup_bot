@@ -13,6 +13,7 @@ import { config } from '../config/config';
 import { escapeHtml } from '../utils/markdown';
 import { redisService } from '../services/RedisService';
 import { renderWelcomeTemplate } from '../utils/welcomeTemplate';
+import { CasService } from '../services/CasService';
 
 export class MembershipHandler {
   private logger: Logger;
@@ -25,7 +26,8 @@ export class MembershipHandler {
     private verificationService: VerificationService,
     private auditService: AuditService,
     private contentFilterService: ContentFilterService,
-    private levelService: LevelService
+    private levelService: LevelService,
+    private casService: CasService = new CasService()
   ) {
     this.logger = new Logger('MembershipHandler');
   }
@@ -315,6 +317,14 @@ export class MembershipHandler {
         }
       }
 
+      // Blocklist lookup, started now but awaited only after the mute. It is a
+      // network call to a third party, and the rule of this method is that
+      // nothing slow stands between a join and the restriction.
+      const casListed =
+        (settings.customSettings as Record<string, unknown> | undefined)?.casCheck === false
+          ? Promise.resolve(false)
+          : this.casService.isBanned(user.id);
+
       // ── The security-critical step. Nothing optional runs before this. ──
       const restriction = await this.applyRestrictions(ctx, group.id, user.id);
       if (!restriction.ok) {
@@ -325,6 +335,15 @@ export class MembershipHandler {
         // join timestamp written here.
         await this.recordJoinBookkeeping(user, group);
         return;
+      }
+
+      // A known spam account is removed outright instead of being offered a
+      // captcha it can simply pay to have solved.
+      if (await casListed) {
+        const removed = await this.removeListedAccount(ctx, user, group);
+        if (removed) return;
+        // Could not ban: they are muted already, so fall through to normal
+        // verification rather than leave them in an undefined state.
       }
 
       const existingSession = await this.verificationService.getPendingSession(user.id, group.id);
@@ -503,6 +522,53 @@ export class MembershipHandler {
       this.logger.error('Error applying restrictions', { groupId, userId, error: message });
       return { ok: false, error: message };
     }
+  }
+
+  /**
+   * Ban a joining account that appears on the CAS blocklist. Returns whether
+   * the ban took effect; on failure the caller continues with verification.
+   */
+  private async removeListedAccount(
+    ctx: MyContext,
+    user: { id: string; firstName: string; username?: string | null },
+    group: { id: string }
+  ): Promise<boolean> {
+    try {
+      await ctx.api.banChatMember(Number(group.id), Number(user.id));
+    } catch (error) {
+      this.logger.error('Could not ban a CAS-listed account', {
+        userId: user.id,
+        groupId: group.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+
+    this.logger.info('Banned a CAS-listed account on join', { userId: user.id, groupId: group.id });
+    await this.bestEffort('audit CAS ban', () =>
+      this.auditService.log({
+        groupId: group.id,
+        userId: user.id,
+        action: 'user_banned',
+        details: 'Listed on the CAS spam blocklist (cas.chat) at join',
+      })
+    );
+
+    const label = user.username ? `@${user.username}` : user.firstName;
+    await this.bestEffort('announce CAS ban', async () => {
+      const notice = await ctx.api.sendMessage(
+        Number(group.id),
+        `🚫 已拦截已知广告账号 ${escapeHtml(label)}（CAS 反垃圾黑名单）`,
+        { parse_mode: 'HTML' }
+      );
+      // Short-lived: the group needs to know it happened, not a permanent
+      // record of every spam account that tried.
+      setTimeout(() => {
+        ctx.api.deleteMessage(Number(group.id), notice.message_id).catch(() => undefined);
+      }, 60_000).unref?.();
+    });
+
+    return true;
   }
 
   /**

@@ -6,6 +6,8 @@ process.env.DB_PASSWORD ||= 'test';
 process.env.JWT_SECRET ||= 'unit-test-jwt-secret-not-used-in-prod';
 process.env.TURNSTILE_SITE_KEY ||= 'test-site-key';
 process.env.TURNSTILE_SECRET_KEY ||= 'test-secret-key';
+// Never let unit tests reach the real CAS API; tests that need it inject a stub.
+process.env.CAS_ENABLED ||= 'false';
 
 // Mock ioredis so importing modules that construct RedisService doesn't open a
 // real network connection (the pure functions under test never touch Redis).
