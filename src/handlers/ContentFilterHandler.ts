@@ -1,4 +1,5 @@
 import { Bot } from 'grammy';
+import { describeMessage } from '../utils/messageSample';
 import type { MessageEntity } from 'grammy/types';
 import { MyContext } from '../services/TelegramBot';
 import { ContentFilterService, FilterConfig } from '../services/ContentFilterService';
@@ -117,9 +118,42 @@ export class ContentFilterHandler {
       if (result.blocked) {
         return this.executeFilterAction(ctx, chatId, userId.toString(), filterConfig, result.reasons);
       }
+
+      this.recordNearMiss(ctx, chatId, result, {
+        linkSignal: this.contentFilterService.containsLinkSignal(scanTarget, exemptBots),
+        crossChatQuote,
+      });
     }
 
     return false;
+  }
+
+  /**
+   * Log a message that carried a spam signal but was let through.
+   *
+   * Blocked messages are audited; allowed ones left no trace at all, which is
+   * precisely backwards for improving the filter — the samples worth studying
+   * are the ones that got past it. Ordinary conversation (no signal at all) is
+   * not recorded, and the sample is truncated.
+   */
+  private recordNearMiss(
+    ctx: MyContext,
+    chatId: string,
+    result: { score: number; reasons: string[] },
+    signals: { linkSignal: boolean; crossChatQuote: boolean }
+  ): void {
+    const hasKeyboard = Boolean(ctx.message?.reply_markup?.inline_keyboard?.length);
+    const suspicious = result.score > 0 || signals.linkSignal || signals.crossChatQuote || hasKeyboard;
+    if (!suspicious) return;
+
+    this.logger.info('Suspicious message allowed', {
+      event: 'near_miss',
+      chatId,
+      score: result.score,
+      reasons: result.reasons,
+      signals: { ...signals, hasKeyboard },
+      sample: describeMessage(ctx.message),
+    });
   }
 
   /**

@@ -18,14 +18,28 @@ const transports: winston.transport[] = [
   }),
 ];
 
+// Size-capped rotation. The file transports had no limit, so bot.log grew
+// until the disk filled — and near-miss / spam-report samples now make it grow
+// faster. winston rolls to bot1.log, bot2.log… and drops the oldest.
+const LOG_FILE_MAX_BYTES = 20 * 1024 * 1024;
+const LOG_FILE_KEEP = 10;
+
 if (config.env === 'production') {
   transports.push(
     new winston.transports.File({
       filename: path.join(path.dirname(config.logging.filePath), 'error.log'),
       level: 'error',
+      maxsize: LOG_FILE_MAX_BYTES,
+      maxFiles: LOG_FILE_KEEP,
+      tailable: true,
     }),
     new winston.transports.File({
       filename: config.logging.filePath,
+      maxsize: LOG_FILE_MAX_BYTES,
+      maxFiles: LOG_FILE_KEEP,
+      // Newest entries always stay in bot.log, so `tail -f logs/bot.log`
+      // keeps working across rotations.
+      tailable: true,
     })
   );
 }

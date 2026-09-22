@@ -37,6 +37,7 @@ export class HelpCommand extends BaseCommand {
       helpText += `/settings - 查看和修改群组设置\n`;
       helpText += `/kick @用户 [原因] - 踢出用户\n`;
       helpText += `/ban @用户 [时长] [原因] - 封禁用户\n`;
+      helpText += `/spam - 回复广告消息：删除 + 封禁发送者 + 记录样本\n`;
       helpText += `/unban @用户 - 解封用户\n`;
       helpText += `/mute @用户 [时长] - 禁言用户\n`;
       helpText += `/unmute @用户 - 解除禁言\n\n`;
