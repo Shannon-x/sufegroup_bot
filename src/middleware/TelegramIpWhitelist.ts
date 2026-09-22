@@ -38,7 +38,19 @@ export class TelegramIpWhitelist {
     );
 
     if (!isWhitelisted) {
-      this.logger.warn('Request from non-Telegram IP', { ip: remoteIp });
+      // A private or loopback source is not an attacker on the internet — it
+      // is our own reverse proxy, and it means request.ip was never resolved to
+      // the real client. Every genuine update is being rejected in that state,
+      // so say exactly what to change rather than log a bare address.
+      if (this.isPrivateAddress(ipNum)) {
+        this.logger.error(
+          'Webhook rejected: request.ip is a proxy address, so TRUST_PROXY does not cover the reverse proxy. ' +
+            'All Telegram updates are being dropped. Set TRUST_PROXY=loopback,uniquelocal (or the proxy address).',
+          { ip: remoteIp }
+        );
+      } else {
+        this.logger.warn('Request from non-Telegram IP', { ip: remoteIp });
+      }
       reply.code(404).send({ error: 'Not found' });
       return false;
     }
@@ -54,6 +66,18 @@ export class TelegramIpWhitelist {
   private static normalizeIp(ip: string | undefined): string | undefined {
     if (!ip) return undefined;
     return ip.startsWith('::ffff:') ? ip.slice(7) : ip;
+  }
+
+  /** 10/8, 172.16/12, 192.168/16, 127/8 — addresses only a local proxy would have. */
+  private static isPrivateAddress(ipNum: number): boolean {
+    const inRange = (base: number, bits: number) =>
+      (ipNum >>> (32 - bits)) === (base >>> (32 - bits));
+    return (
+      inRange(0x0a000000, 8) ||
+      inRange(0xac100000, 12) ||
+      inRange(0xc0a80000, 16) ||
+      inRange(0x7f000000, 8)
+    );
   }
 
   private static ipToNumber(ip: string): number | null {
