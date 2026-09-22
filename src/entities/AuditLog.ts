@@ -33,6 +33,8 @@ export type AuditAction =
   // A moderation action was announced-or-attempted but the Telegram call failed.
   | 'moderation_failed'
   | 'lottery_refunded'
+  // An admin flagged a message with /spam; metadata carries the full sample.
+  | 'spam_reported'
   | 'message_filtered'
   | 'lottery_created'
   | 'lottery_drawn'

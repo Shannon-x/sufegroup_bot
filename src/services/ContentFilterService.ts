@@ -28,6 +28,7 @@ export interface FilterConfig {
   blockInviteLinks: boolean;   // Block t.me/+xxx, t.me/joinchat, etc.
   blockPhoneNumbers: boolean;  // Block phone numbers
   blockForwards: boolean;      // Block forwards from channels/groups/hidden senders
+  blockBotMentions: boolean;   // Block any @mention of a bot other than this one
   newUserLinkDelay: number;    // Minutes after join before user can post links (0 = off)
   customKeywords: string[];    // Admin-added keywords
   whitelistUrls: string[];     // Allowed URL domains
@@ -43,6 +44,10 @@ export const DEFAULT_FILTER_CONFIG: FilterConfig = {
   blockInviteLinks: true,
   blockPhoneNumbers: true,
   blockForwards: false,
+  // Off by default: members mention inline bots (@gif, @vote) in ordinary
+  // chat. The lure shape — a bot mention carrying a tracking payload — is
+  // caught regardless of this switch; this only makes *every* mention decisive.
+  blockBotMentions: false,
   newUserLinkDelay: 5,
   customKeywords: [],
   whitelistUrls: [],
@@ -56,6 +61,14 @@ export interface FilterResult {
   blocked: boolean;
   reasons: string[];
   score: number; // 0-100, higher = more spammy
+}
+
+/** Facts about a message that are not visible in its text. */
+export interface AnalyzeContext {
+  /** Bot usernames never counted as a lure — at minimum, this bot itself. */
+  exemptBots?: string[];
+  /** The message quotes a post from another chat (Telegram "external reply"). */
+  crossChatQuote?: boolean;
 }
 
 // ── Built-in patterns (zero maintenance) ──
@@ -127,6 +140,17 @@ const PHONE_REGEX = new RegExp(
   ].join('|'),
   'g'
 );
+
+// Bot usernames. Telegram requires every bot username to end in "bot" and to
+// be 5–32 characters long, so the suffix identifies a bot mention from the text
+// alone, with no API call.
+const BOT_MENTION_REGEX = /@([A-Za-z][A-Za-z0-9_]{1,28}bot)\b/gi;
+
+// An opaque tracking payload after a bot mention: "campaign_001", or a long
+// token mixing letters and digits ("g1790033580614cfd80825"). This is how a
+// phishing bot attributes which spam run delivered a victim. Real people do
+// not type these; they paste them from a campaign script.
+const TRACKING_TOKEN_REGEX = /(?:^|[\s:：=])(?:campaign[_-]?\d+|(?=[a-z0-9_-]*\d)(?=[a-z0-9_-]*[a-z])[a-z0-9_-]{14,})(?=$|\s)/i;
 
 // E.164 allows at most 15 digits; below 8 nothing is dialable either.
 const PHONE_MIN_DIGITS = 8;
@@ -291,7 +315,7 @@ export class ContentFilterService {
    *  - **Heuristic patterns** (built-in ad/scam wording, spam TLDs). Still
    *    additive, so several weak hints together clear BLOCK_SCORE_THRESHOLD.
    */
-  analyzeText(text: string, filterConfig: FilterConfig): FilterResult {
+  analyzeText(text: string, filterConfig: FilterConfig, context: AnalyzeContext = {}): FilterResult {
     const reasons: string[] = [];
     let score = 0;
     // Set by explicit rules only — see the doc comment above.
@@ -403,6 +427,35 @@ export class ContentFilterService {
       }
     }
 
+    // 6. Phishing-bot lures.
+    //
+    // An account posts "@somebot campaign_001 g17900…" — no link, no phone
+    // number, nothing any rule above looks at, so it scored zero. The mention
+    // routes members to a bot that runs the actual scam, and the token tells
+    // the operator which spam run brought the victim in. A bot mention on its
+    // own is ordinary (people invoke inline bots); a bot mention *carrying a
+    // tracking payload* is not.
+    const lures = this.findBotLures(normalized, context.exemptBots);
+    if (lures.mentions.length > 0) {
+      if (filterConfig.blockBotMentions) {
+        reasons.push(`机器人链接: ${lures.mentions.length}个`);
+        score += BLOCK_SCORE_THRESHOLD;
+        ruleViolated = true;
+      }
+      if (lures.withTracking) {
+        reasons.push('钓鱼机器人');
+        score += 35;
+      }
+    }
+
+    // 7. Quoting a post from another chat. A legitimate feature, so it only
+    // adds weight — but it is how the lure above borrows credibility, by
+    // quoting (or faking) an official announcement channel above the payload.
+    if (context.crossChatQuote) {
+      reasons.push('跨群引用');
+      score += 15;
+    }
+
     // Clamp score
     score = Math.min(score, 100);
 
@@ -418,14 +471,44 @@ export class ContentFilterService {
    * Runs on the normalised text and covers tg:// deep links, so the delay sees
    * the same links the analyzer does.
    */
-  containsLinkSignal(text: string): boolean {
+  containsLinkSignal(text: string, exemptBots?: string[]): boolean {
     if (!text) return false;
     const normalized = normalizeForMatching(text);
     return (
       normalized.match(URL_REGEX) !== null ||
       normalized.match(TG_INVITE_REGEX) !== null ||
-      normalized.match(TG_DEEPLINK_REGEX) !== null
+      normalized.match(TG_DEEPLINK_REGEX) !== null ||
+      // A bot mention is a link in every sense that matters: one tap opens a
+      // chat with it. Leaving it out let a brand-new account send members to a
+      // phishing bot straight through the new-user link delay.
+      this.findBotLures(normalized, exemptBots).mentions.length > 0
     );
+  }
+
+  /**
+   * Bot mentions in already-normalised text, and whether any of them is
+   * followed on the same line by a tracking payload.
+   */
+  private findBotLures(
+    normalized: string,
+    exemptBots: string[] = []
+  ): { mentions: string[]; withTracking: boolean } {
+    const exempt = new Set(exemptBots.filter(Boolean).map(name => name.replace(/^@/, '').toLowerCase()));
+    const mentions: string[] = [];
+    let withTracking = false;
+
+    for (const match of normalized.matchAll(BOT_MENTION_REGEX)) {
+      const username = match[1].toLowerCase();
+      if (exempt.has(username)) continue;
+      mentions.push(username);
+
+      const start = (match.index ?? 0) + match[0].length;
+      const lineEnd = normalized.indexOf('\n', start);
+      const rest = normalized.slice(start, lineEnd === -1 ? undefined : lineEnd);
+      if (TRACKING_TOKEN_REGEX.test(rest)) withTracking = true;
+    }
+
+    return { mentions, withTracking };
   }
 
   /**

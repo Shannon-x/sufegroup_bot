@@ -1,4 +1,5 @@
 import { Bot } from 'grammy';
+import { describeMessage } from '../utils/messageSample';
 import type { MessageEntity } from 'grammy/types';
 import { MyContext } from '../services/TelegramBot';
 import { ContentFilterService, FilterConfig } from '../services/ContentFilterService';
@@ -80,9 +81,15 @@ export class ContentFilterHandler {
       text,
       ...this.collectEntityUrls(ctx),
       ...this.collectKeyboardContent(ctx),
+      ...this.collectQuotedContent(ctx),
     ]
       .filter(Boolean)
       .join(SCAN_SEPARATOR);
+
+    // This bot is never a lure; everything else that is a bot is judged.
+    const exemptBots = ctx.me?.username ? [ctx.me.username] : [];
+    const crossChatQuote = this.isCrossChatQuote(ctx);
+    const analyzeContext = { exemptBots, crossChatQuote };
 
     // 1. Check forwarded messages (channel / group / hidden sender)
     if (filterConfig.blockForwards) {
@@ -94,7 +101,10 @@ export class ContentFilterHandler {
 
     // 2. New user link restriction
     if (scanTarget && filterConfig.newUserLinkDelay > 0) {
-      if (this.contentFilterService.containsLinkSignal(scanTarget)) {
+      // A quote from another chat counts as a link here: it is the shape the
+      // lure takes (fake "official announcement" above a bot mention), and a
+      // member who joined minutes ago has no reason to be doing it.
+      if (crossChatQuote || this.contentFilterService.containsLinkSignal(scanTarget, exemptBots)) {
         const isNew = await this.contentFilterService.isNewUser(chatId, userId.toString(), filterConfig.newUserLinkDelay);
         if (isNew) {
           return this.executeFilterAction(ctx, chatId, userId.toString(), filterConfig, ['新用户发链接']);
@@ -104,13 +114,46 @@ export class ContentFilterHandler {
 
     // 3. Analyze text content
     if (scanTarget) {
-      const result = this.contentFilterService.analyzeText(scanTarget, filterConfig);
+      const result = this.contentFilterService.analyzeText(scanTarget, filterConfig, analyzeContext);
       if (result.blocked) {
         return this.executeFilterAction(ctx, chatId, userId.toString(), filterConfig, result.reasons);
       }
+
+      this.recordNearMiss(ctx, chatId, result, {
+        linkSignal: this.contentFilterService.containsLinkSignal(scanTarget, exemptBots),
+        crossChatQuote,
+      });
     }
 
     return false;
+  }
+
+  /**
+   * Log a message that carried a spam signal but was let through.
+   *
+   * Blocked messages are audited; allowed ones left no trace at all, which is
+   * precisely backwards for improving the filter — the samples worth studying
+   * are the ones that got past it. Ordinary conversation (no signal at all) is
+   * not recorded, and the sample is truncated.
+   */
+  private recordNearMiss(
+    ctx: MyContext,
+    chatId: string,
+    result: { score: number; reasons: string[] },
+    signals: { linkSignal: boolean; crossChatQuote: boolean }
+  ): void {
+    const hasKeyboard = Boolean(ctx.message?.reply_markup?.inline_keyboard?.length);
+    const suspicious = result.score > 0 || signals.linkSignal || signals.crossChatQuote || hasKeyboard;
+    if (!suspicious) return;
+
+    this.logger.info('Suspicious message allowed', {
+      event: 'near_miss',
+      chatId,
+      score: result.score,
+      reasons: result.reasons,
+      signals: { ...signals, hasKeyboard },
+      sample: describeMessage(ctx.message),
+    });
   }
 
   /**
@@ -142,6 +185,52 @@ export class ContentFilterHandler {
       urls.add(entity.url);
     }
     return [...urls];
+  }
+
+  /**
+   * Content a reader sees that is not part of this message's own text.
+   *
+   * A reply can quote a post from a *different* chat, and the client renders
+   * that quote — source title and all — directly above the message. Spammers
+   * use it to wear someone else's credibility: the quote shows a post from what
+   * looks like the group's own announcement channel ("佣金提现系统已优化…"),
+   * and the message body underneath points at a phishing bot. None of it was
+   * ever scanned.
+   *
+   * `via_bot` is included as a mention: a message sent through a bot's inline
+   * mode carries the bot's name, and tapping it opens that bot.
+   */
+  private collectQuotedContent(ctx: MyContext): string[] {
+    const message = ctx.message;
+    if (!message) return [];
+
+    const parts: string[] = [];
+    if (message.quote?.text) parts.push(message.quote.text);
+
+    const external = message.external_reply;
+    if (external) {
+      const origin = external.origin;
+      if (origin.type === 'channel' && origin.chat.title) parts.push(origin.chat.title);
+      if (origin.type === 'chat' && 'title' in origin.sender_chat && origin.sender_chat.title) {
+        parts.push(origin.sender_chat.title);
+      }
+      if (external.chat && 'title' in external.chat && external.chat.title) {
+        parts.push(external.chat.title);
+      }
+    }
+
+    const viaBot = message.via_bot?.username;
+    if (viaBot) parts.push(`@${viaBot}`);
+
+    return [...new Set(parts)];
+  }
+
+  /** Whether the message quotes a post from a chat other than this one. */
+  private isCrossChatQuote(ctx: MyContext): boolean {
+    const external = ctx.message?.external_reply;
+    if (!external) return false;
+    // A missing chat means the source is hidden, which is not "this chat".
+    return external.chat?.id !== ctx.chat?.id;
   }
 
   /**

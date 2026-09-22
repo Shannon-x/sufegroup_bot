@@ -74,6 +74,12 @@ const envSchema = z.object({
   // production; `false` is correct when the app is directly exposed.
   TRUST_PROXY: z.string().default('false'),
 
+  // Combot Anti-Spam (https://cas.chat) — a shared blocklist of accounts
+  // reported for spam across many Telegram groups. Checked when someone joins,
+  // so a known spam account is removed before it can post. Sends the joining
+  // member's numeric Telegram id to api.cas.chat; set to false to opt out.
+  CAS_ENABLED: z.enum(['true', 'false']).default('true'),
+
   // Logging
   LOG_LEVEL: z.enum(['error', 'warn', 'info', 'debug']).default('info'),
   LOG_FILE_PATH: z.string().default('./logs/bot.log'),
@@ -177,6 +183,9 @@ export const config = {
     verificationRejoinCooldownSeconds: env.VERIFICATION_REJOIN_COOLDOWN_SECONDS,
     rateLimitWindowMs: env.DEFAULT_RATE_LIMIT_WINDOW_MS,
     rateLimitMaxRequests: env.DEFAULT_RATE_LIMIT_MAX_REQUESTS,
+  },
+  cas: {
+    enabled: env.CAS_ENABLED === 'true',
   },
   logging: {
     level: env.LOG_LEVEL,

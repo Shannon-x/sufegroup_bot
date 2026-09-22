@@ -28,6 +28,7 @@ import { BlacklistCommand } from './BlacklistCommand';
 import { VerifyCommand } from './VerifyCommand';
 import { ReverifyCommand } from './ReverifyCommand';
 import { AuditCommand } from './AuditCommand';
+import { SpamCommand } from './SpamCommand';
 
 export class CommandHandler {
   private commands: Map<string, any>;
@@ -72,6 +73,7 @@ export class CommandHandler {
       VerifyCommand,
       ReverifyCommand,
       AuditCommand,
+      SpamCommand,
     ];
 
     for (const CommandClass of commandClasses) {

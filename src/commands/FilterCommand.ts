@@ -66,6 +66,9 @@ export class FilterCommand extends BaseCommand {
       case 'phone':
         await this.toggleOption(ctx, groupId, settings, filterConfig, 'blockPhoneNumbers', parts[1]);
         break;
+      case 'botmention':
+        await this.toggleOption(ctx, groupId, settings, filterConfig, 'blockBotMentions', parts[1]);
+        break;
       case 'forward':
         await this.toggleOption(ctx, groupId, settings, filterConfig, 'blockForwards', parts[1]);
         break;
@@ -184,6 +187,7 @@ export class FilterCommand extends BaseCommand {
         blockInviteLinks: '邀请链接过滤',
         blockPhoneNumbers: '手机号过滤',
         blockForwards: '频道转发过滤',
+        blockBotMentions: '机器人提及过滤',
       };
       await ctx.reply(`${labels[key] || key} 当前: ${current}\n\n使用 \`on\` 或 \`off\` 切换`, { parse_mode: 'Markdown' });
       return;
@@ -194,6 +198,9 @@ export class FilterCommand extends BaseCommand {
       blockInviteLinks: config.blockInviteLinks,
       blockPhoneNumbers: config.blockPhoneNumbers,
       blockForwards: config.blockForwards,
+      // Every toggleable field must be listed here. A key missing from this
+      // map is silently not applied while the reply still says "已开启".
+      blockBotMentions: config.blockBotMentions,
     };
     if (key in boolFields) {
       boolFields[key] = value === 'on';
@@ -381,6 +388,7 @@ export class FilterCommand extends BaseCommand {
     text += `${config.blockUrls ? on : off} 链接过滤 (\`/filter url\`)\n`;
     text += `${config.blockInviteLinks ? on : off} 邀请链接过滤 (\`/filter invite\`)\n`;
     text += `${config.blockPhoneNumbers ? on : off} 手机号过滤 (\`/filter phone\`)\n`;
+    text += `${config.blockBotMentions ? on : off} 机器人提及过滤 (\`/filter botmention\`)\n`;
     text += `${config.blockForwards ? on : off} 频道转发过滤 (\`/filter forward\`)\n`;
     text += `⏱ 新用户链接延迟: ${config.newUserLinkDelay}分钟\n\n`;
     text += `*违规处理*\n`;
