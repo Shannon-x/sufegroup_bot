@@ -69,7 +69,16 @@ export interface AnalyzeContext {
   exemptBots?: string[];
   /** The message quotes a post from another chat (Telegram "external reply"). */
   crossChatQuote?: boolean;
+  /** Display name is corroborating evidence only, never standalone content. */
+  senderName?: string;
+  /** Actual sender username (without @), not a mention or reply target. */
+  senderUsername?: string;
 }
+
+// Keep independent rendered fields apart: a word in a quote or hidden URL
+// must not complete a commercial pitch in the message body. Newlines stop
+// dot-based spam patterns; the pipe stops phone patterns joining digit runs.
+export const CONTENT_SCAN_SEPARATOR = '\n|\n';
 
 // ── Built-in patterns (zero maintenance) ──
 
@@ -156,6 +165,20 @@ const TRACKING_TOKEN_REGEX = /(?:^|[\s:：=])(?:campaign[_-]?\d+|(?=[a-z0-9_-]*\
 const PHONE_MIN_DIGITS = 8;
 const PHONE_MAX_DIGITS = 15;
 
+// Payment products are ordinary discussion topics. Require a use case plus
+// sales wording; never make "GPT", "Visa", or "虚拟卡" a blocked keyword.
+const PAYMENT_CARD_REGEX = /[虚虛][拟擬](?:信用)?卡|信用卡|visa|mastercard|vcc|[万萬]事[达達]|💳/i;
+const PAYMENT_USE_REGEX = /claude|(?:chat)?gpt|openai|[订訂][阅閱]|投流/i;
+const PAYMENT_SELLER_REGEX = /源[头頭]|一手|[货貨]源|批[发發]|卡商|[现現][货貨]|出售|售[卖賣]/;
+// VCC4989 / vcc_shop are a weak card-trading signal, never a ban on their own.
+// Anchor at the start so unrelated handles such as nvcc_user do not qualify.
+const PAYMENT_USERNAME_REGEX = /^vcc[a-z0-9_]*$/i;
+// In a message, require an actual supply offer, not just "卡商" or "一手":
+// both occur in questions and accounts of someone's own payment experience.
+const PAYMENT_SUPPLY_OFFER_REGEX = /一手[货貨]源|源[头頭]直[供销銷]|[虚虛][拟擬](?:信用)?卡批[发發](?!商)|(?:出售|售[卖賣])(?:[虚虛][拟擬](?:信用)?卡|visa|mastercard|vcc)/i;
+const PAYMENT_BENEFIT_REGEX = /[丝絲]滑(?:支付|付|[订訂][阅閱]|投流)|[订訂][阅閱][无無][忧憂]/;
+const PAYMENT_SERVICE_OFFER_REGEX = /(?:低[价價]|特[价價]|[优優]惠|[专專][业業]|承接)(?:代充|代付)|(?:代充|代付)服[务務]/;
+
 // Common Chinese spam / ad patterns
 const SPAM_PATTERNS: Array<{ pattern: RegExp; weight: number; label: string }> = [
   // Gambling
@@ -165,7 +188,9 @@ const SPAM_PATTERNS: Array<{ pattern: RegExp; weight: number; label: string }> =
   // Fraud / scam
   { pattern: /刷单|兼职日[赚结]|[日月]入[过万千]|[在线日]赚\d|免费领|薅羊毛|零撸|空投.*领取/i, weight: 35, label: '诈骗' },
   // Crypto scam
-  { pattern: /搬砖套利|跑[分量]|[USDT出入金].*[日稳赚]|合约[带跟]单|私募[额度]|百倍币|暴涨.*入场/i, weight: 30, label: '币圈诈骗' },
+  // Match whole terms: [USDT出入金] treated the T in GPT as a crypto signal,
+  // then [日稳赚] treated "稳定支付" as a profit claim in ordinary card chat.
+  { pattern: /搬砖套利|跑[分量]|(?:USDT|出入金).*(?:日赚|稳赚)|合约[带跟]单|私募[额度]|百倍币|暴涨.*入场/i, weight: 30, label: '币圈诈骗' },
   // Contact solicitation
   // eslint-disable-next-line no-misleading-character-class
   { pattern: /[加➕]我?[微➕薇V][信❤️xX]|[微➕薇V][信❤️xX]号?[:：]?\s*[a-zA-Z0-9_]+/i, weight: 30, label: '引流' },
@@ -427,6 +452,14 @@ export class ContentFilterService {
       }
     }
 
+    // A payment ad can have no links at all: the sender's profile is the
+    // destination. Name evidence is scoped to this rule so a URL, phone number
+    // or custom keyword in a nickname cannot punish every innocent message.
+    if (this.isPaymentPromotion(normalized, context)) {
+      reasons.push('支付服务推广');
+      score += BLOCK_SCORE_THRESHOLD;
+    }
+
     // 6. Phishing-bot lures.
     //
     // An account posts "@somebot campaign_001 g17900…" — no link, no phone
@@ -464,6 +497,28 @@ export class ContentFilterService {
       reasons,
       score,
     };
+  }
+
+  private isPaymentPromotion(normalized: string, context: AnalyzeContext): boolean {
+    // Only this detector joins spaced-out words and strips ZWJ. Preserve the
+    // normalizer's emoji handling for all existing rules.
+    const compact = (value: string) => value.replace(/[\s\u200D]/g, '');
+    const name = compact(normalizeForMatching(context.senderName ?? ''));
+    const sellerName = PAYMENT_CARD_REGEX.test(name) && PAYMENT_SELLER_REGEX.test(name);
+    const vccUsername = PAYMENT_USERNAME_REGEX.test(context.senderUsername ?? '');
+
+    return normalized.split(CONTENT_SCAN_SEPARATOR).some(part => {
+      const body = compact(part);
+      if (!PAYMENT_USE_REGEX.test(body)) return false;
+      if (PAYMENT_SERVICE_OFFER_REGEX.test(body)) return true;
+      const cardInBody = PAYMENT_CARD_REGEX.test(body);
+      if (!cardInBody && !vccUsername) return false;
+
+      return PAYMENT_SUPPLY_OFFER_REGEX.test(body) || PAYMENT_BENEFIT_REGEX.test(body) ||
+        // Identity alone is insufficient. A terse "专用" pitch still needs a
+        // card in the body, so "GPT专用提示词" cannot trip on a VCC username.
+        (cardInBody && (sellerName || vccUsername) && /[专專]用/.test(body));
+    });
   }
 
   /**

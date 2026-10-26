@@ -2,7 +2,7 @@ import { Bot } from 'grammy';
 import { describeMessage } from '../utils/messageSample';
 import type { MessageEntity } from 'grammy/types';
 import { MyContext } from '../services/TelegramBot';
-import { ContentFilterService, FilterConfig } from '../services/ContentFilterService';
+import { CONTENT_SCAN_SEPARATOR, ContentFilterService, FilterConfig } from '../services/ContentFilterService';
 import { AuditService } from '../services/AuditService';
 import { Logger } from '../utils/logger';
 import { sendTemporaryMessage } from '../utils/telegram';
@@ -34,13 +34,6 @@ const PERMISSION_ALERT_COOLDOWN_MS = 10 * 60 * 1000;
 // itself up like every other broadcast in this file instead of staying as a
 // permanent notice that the bot is understaffed.
 const PERMISSION_ALERT_TTL_MS = 2 * 60 * 1000;
-
-// Separator between the visible text and the hidden entity targets. It must not
-// let a pattern match *across* the seam: `\n` stops the dot-based spam patterns
-// (JS `.` never matches a newline) and the `|` stops PHONE_REGEX, whose group
-// separator class `[\s.-]` would otherwise happily glue the tail of the text to
-// the head of a URL into a fake phone number.
-const SCAN_SEPARATOR = '\n|\n';
 
 export class ContentFilterHandler {
   private logger: Logger;
@@ -84,12 +77,13 @@ export class ContentFilterHandler {
       ...this.collectQuotedContent(ctx),
     ]
       .filter(Boolean)
-      .join(SCAN_SEPARATOR);
+      .join(CONTENT_SCAN_SEPARATOR);
 
     // This bot is never a lure; everything else that is a bot is judged.
     const exemptBots = ctx.me?.username ? [ctx.me.username] : [];
     const crossChatQuote = this.isCrossChatQuote(ctx);
-    const analyzeContext = { exemptBots, crossChatQuote };
+    const senderName = [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ');
+    const analyzeContext = { exemptBots, crossChatQuote, senderName, senderUsername: ctx.from?.username };
 
     // 1. Check forwarded messages (channel / group / hidden sender)
     if (filterConfig.blockForwards) {
