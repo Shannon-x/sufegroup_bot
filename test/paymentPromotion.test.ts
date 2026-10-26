@@ -5,6 +5,7 @@ import { CONTENT_SCAN_SEPARATOR, ContentFilterService, HIGH_CONFIDENCE_SPAM_LABE
 const REPORTED_NAME = '蓝色天空虚拟卡源头';
 const REPORTED_TEXT = 'Claude/GPT专用 Visa💳订阅 投流丝滑付';
 const CARD_BUNDLE_TEXT = '跨境电商、AI订阅，一💳搞定';
+const CARD_SCENE_TEXT = 'VCC虚拟卡，支持USDT及多种支付场景！';
 const service = new ContentFilterService();
 const filter = service.getFilterConfig({ filter: { enabled: true, newUserLinkDelay: 0 } });
 
@@ -33,6 +34,15 @@ describe('payment promotion without a link', () => {
     '一卡搞定，跨境电商、AI订阅',
     '跨境电商，一卡通付',
     'AI订阅，1卡通用',
+    CARD_SCENE_TEXT,
+    'VCC虚拟卡,支持USDT及多种支付场景!',
+    'ＶＣＣ虚拟卡，支持ＵＳＤＴ及多种支付场景！',
+    'V\u200bCC虚拟卡，支持US\u200bDT及多种支付场景！',
+    'VCC虛擬卡，支持USDT及多種支付場景！',
+    'V C C 虚 拟 卡，支 持 U S D T 及 多 种 支 付 场 景',
+    'VCC虚拟卡\n支持USDT充值\n全场景可用',
+    '虚拟信用卡 USDT开卡 多平台支付',
+    'Visa虚拟卡，加密货币充值，适用于各类消费场景',
   ])('blocks a commercial pitch: %s', (text) => {
     const result = service.analyzeText(text, filter);
     expect(result.blocked).toBe(true);
@@ -67,6 +77,14 @@ describe('payment promotion without a link', () => {
     '今天用一张卡搞定了AI订阅',
     '跨境电商怎么用AI提高效率？',
     '一卡搞定校园门禁和食堂支付',
+    'VCC虚拟卡支持USDT吗？',
+    '我的VCC支持USDT充值，挺方便',
+    '虚拟卡支持多种支付场景吗？',
+    'VCC虚拟卡支持USDT和多种支付场景吗？',
+    'VCC虚拟卡支持USDT充值吗\n能用在多种支付场景',
+    '这张VCC支持USDT吗？我想用在多种支付场景',
+    'USDT 可以用在多种支付场景',
+    '虚拟卡能在多个平台用，但不支持 USDT 么',
   ])('allows ordinary discussion: %s', (text) => {
     expect(service.analyzeText(text, filter).blocked).toBe(false);
   });
@@ -79,6 +97,7 @@ describe('payment promotion without a link', () => {
 
   it('does not combine unrelated body and quote/keyboard/link fields', () => {
     const text = ['GPT订阅用 Visa', '一手货源'].join(CONTENT_SCAN_SEPARATOR);
+    expect(service.analyzeText(['VCC虚拟卡', '支持USDT及多种支付场景！'].join(CONTENT_SCAN_SEPARATOR), filter).blocked).toBe(false);
     expect(service.analyzeText(text, filter).blocked).toBe(false);
     expect(service.analyzeText(['AI订阅', '一💳搞定'].join(CONTENT_SCAN_SEPARATOR), filter).blocked).toBe(false);
   });
@@ -149,6 +168,16 @@ describe('payment promotion through the moderation handler', () => {
     expect(h.api.deleteMessage).toHaveBeenCalledOnce();
     expect(h.audit.log).toHaveBeenCalledWith(expect.objectContaining({
       action: 'message_filtered',
+      metadata: expect.objectContaining({ reasons: ['支付服务推广'], messageDeleted: true }),
+    }));
+  });
+
+  it('deletes the general-purpose card pitch under the main group settings', async () => {
+    const h = harness(CARD_SCENE_TEXT, '李督 cha⭐');
+    h.settings.customSettings.filter = { ...filter, blockUrls: false };
+    expect(await h.run()).toBe(true);
+    expect(h.api.deleteMessage).toHaveBeenCalledOnce();
+    expect(h.audit.log).toHaveBeenCalledWith(expect.objectContaining({
       metadata: expect.objectContaining({ reasons: ['支付服务推广'], messageDeleted: true }),
     }));
   });
