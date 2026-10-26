@@ -183,6 +183,13 @@ const PAYMENT_SERVICE_OFFER_REGEX = /(?:低[价價]|特[价價]|[优優]惠|[专
 // questions and personal reports such as "能一卡搞定吗" / "一卡搞定了" stay out.
 // Runs after NFKC and whitespace folding, hence ASCII punctuation here.
 const PAYMENT_BUNDLE_PITCH_REGEX = /(?:^|[,、:;!。]|[订訂][阅閱]|投流|跨境[电電]商)[一1][张張]?(?:卡|💳\uFE0F?)(?:搞定|通付|通用)(?=$|[,、:;!。])/u;
+// A general-purpose card names no use case, so the gate above never sees it:
+// it is sold on how it is funded and how widely it works ("VCC虚拟卡，支持USDT
+// 及多种支付场景！"). A member reports one of the two about their own card; the
+// seller lists both. Each claim must be a statement — a question marker
+// before the clause ends ("支持USDT吗?") keeps it out.
+const PAYMENT_CRYPTO_FUNDING_REGEX = /(?:usdt|usdc|泰[达達][币幣]|(?:加密|[数數]字|[虚虛][拟擬])[货貨][币幣])(?![^,、:;!。]*[?吗嗎么麼呢])/i;
+const PAYMENT_SCOPE_CLAIM_REGEX = /[多各全][种種个個类類]?(?:支付|消[费費]|使用|[应應]用)?(?:[场場]景|平台)(?![^,、:;!。]*[?吗嗎么麼呢])/;
 
 // Common Chinese spam / ad patterns
 const SPAM_PATTERNS: Array<{ pattern: RegExp; weight: number; label: string }> = [
@@ -513,6 +520,11 @@ export class ContentFilterService {
     const vccUsername = PAYMENT_USERNAME_REGEX.test(context.senderUsername ?? '');
 
     return normalized.split(CONTENT_SCAN_SEPARATOR).some(part => {
+      // Line breaks end a clause for the question guard; compact() drops them.
+      const statements = compact(part.replace(/\n/g, '。'));
+      if (PAYMENT_CARD_REGEX.test(statements) && PAYMENT_CRYPTO_FUNDING_REGEX.test(statements) &&
+        PAYMENT_SCOPE_CLAIM_REGEX.test(statements)) return true;
+
       const body = compact(part);
       if (!PAYMENT_USE_REGEX.test(body)) return false;
       if (PAYMENT_SERVICE_OFFER_REGEX.test(body)) return true;
