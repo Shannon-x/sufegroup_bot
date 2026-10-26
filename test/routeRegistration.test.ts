@@ -128,4 +128,26 @@ describe('controller route registration', () => {
     expect(res.statusCode).toBeGreaterThanOrEqual(400);
     expect(res.statusCode).toBeLessThan(600);
   });
+
+  it('rejects oversized filter arrays at the request validation boundary', async () => {
+    const res = await app.inject({
+      method: 'POST', url: '/api/admin/settings/update',
+      payload: {
+        initData: 'invalid-signature', groupId: '-100123',
+        updates: { filter: { customKeywords: Array(201).fill('keyword') } },
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().details).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: ['updates', 'filter', 'customKeywords'], code: 'too_big' }),
+    ]));
+  });
+
+  it('validates a partial settings update before requiring authentication', async () => {
+    const res = await app.inject({
+      method: 'POST', url: '/api/admin/settings/update',
+      payload: { initData: 'invalid-signature', groupId: '-100123', updates: { filter: { enabled: true } } },
+    });
+    expect(res.statusCode).toBe(401);
+  });
 });

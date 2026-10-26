@@ -18,25 +18,26 @@ const envSchema = z.object({
   BOT_MINIAPP_SHORT_NAME: z.string().optional(),
 
   // Chatwoot Telegram inbox verification gate
-  CHATWOOT_VERIFICATION_TTL_MINUTES: z.string().transform(Number).default('10'),
-  CHATWOOT_VERIFIED_TTL_DAYS: z.string().transform(Number).default('30'),
-  CHATWOOT_PROMPT_COOLDOWN_SECONDS: z.string().transform(Number).default('300'),
+  // Zod 4 defaults bypass transforms; prefault preserves parsing of env strings.
+  CHATWOOT_VERIFICATION_TTL_MINUTES: z.string().transform(Number).prefault('10'),
+  CHATWOOT_VERIFIED_TTL_DAYS: z.string().transform(Number).prefault('30'),
+  CHATWOOT_PROMPT_COOLDOWN_SECONDS: z.string().transform(Number).prefault('300'),
   CHATWOOT_GATEWAY_BASE_URL: z.string().optional(),
   CHATWOOT_GATEWAY_TELEGRAM_BOT_TOKEN: z.string().optional(),
   CHATWOOT_GATEWAY_WEBHOOK_SECRET: z.string().optional(),
   CHATWOOT_GATEWAY_INBOX_ID: z.string().default('default'),
-  CHATWOOT_GATEWAY_FORWARD_TIMEOUT_SECONDS: z.string().transform(Number).default('5'),
+  CHATWOOT_GATEWAY_FORWARD_TIMEOUT_SECONDS: z.string().transform(Number).prefault('5'),
   
   // Database
   DB_HOST: z.string().default('localhost'),
-  DB_PORT: z.string().transform(Number).default('5432'),
+  DB_PORT: z.string().transform(Number).prefault('5432'),
   DB_USERNAME: z.string().default('postgres'),
   DB_PASSWORD: z.string().min(1, 'DB_PASSWORD must not be empty'),
   DB_DATABASE: z.string().default('telegram_bot'),
   
   // Redis
   REDIS_HOST: z.string().default('localhost'),
-  REDIS_PORT: z.string().transform(Number).default('6379'),
+  REDIS_PORT: z.string().transform(Number).prefault('6379'),
   REDIS_PASSWORD: z.string().optional(),
   
   // Cloudflare Turnstile
@@ -52,7 +53,7 @@ const envSchema = z.object({
   HMAC_SECRET: z.string().optional(),
   
   // Bot Configuration
-  DEFAULT_VERIFY_TTL_MINUTES: z.string().transform(Number).default('10'),
+  DEFAULT_VERIFY_TTL_MINUTES: z.string().transform(Number).prefault('10'),
   DEFAULT_AUTO_ACTION: z.enum(['mute', 'kick']).default('mute'),
   // Zero means a verification timeout is a classic kick: remove the member,
   // then immediately lift the ban so a legitimate user can rejoin and retry.
@@ -63,9 +64,9 @@ const envSchema = z.object({
     .string()
     .transform(Number)
     .pipe(z.number().int().min(0).max(86400))
-    .default('60'),
-  DEFAULT_RATE_LIMIT_WINDOW_MS: z.string().transform(Number).default('60000'),
-  DEFAULT_RATE_LIMIT_MAX_REQUESTS: z.string().transform(Number).default('10'),
+    .prefault('60'),
+  DEFAULT_RATE_LIMIT_WINDOW_MS: z.string().transform(Number).prefault('60000'),
+  DEFAULT_RATE_LIMIT_MAX_REQUESTS: z.string().transform(Number).prefault('10'),
   
   // Reverse-proxy trust: which peers may supply X-Forwarded-For. Fastify turns
   // it into request.ip, which the Telegram webhook IP allowlist checks.
