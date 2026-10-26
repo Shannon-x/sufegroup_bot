@@ -168,7 +168,7 @@ const PHONE_MAX_DIGITS = 15;
 // Payment products are ordinary discussion topics. Require a use case plus
 // sales wording; never make "GPT", "Visa", or "虚拟卡" a blocked keyword.
 const PAYMENT_CARD_REGEX = /[虚虛][拟擬](?:信用)?卡|信用卡|visa|mastercard|vcc|[万萬]事[达達]|💳/i;
-const PAYMENT_USE_REGEX = /claude|(?:chat)?gpt|openai|[订訂][阅閱]|投流/i;
+const PAYMENT_USE_REGEX = /claude|(?:chat)?gpt|openai|[订訂][阅閱]|投流|跨境[电電]商/i;
 const PAYMENT_SELLER_REGEX = /源[头頭]|一手|[货貨]源|批[发發]|卡商|[现現][货貨]|出售|售[卖賣]/;
 // VCC4989 / vcc_shop are a weak card-trading signal, never a ban on their own.
 // Anchor at the start so unrelated handles such as nvcc_user do not qualify.
@@ -178,6 +178,11 @@ const PAYMENT_USERNAME_REGEX = /^vcc[a-z0-9_]*$/i;
 const PAYMENT_SUPPLY_OFFER_REGEX = /一手[货貨]源|源[头頭]直[供销銷]|[虚虛][拟擬](?:信用)?卡批[发發](?!商)|(?:出售|售[卖賣])(?:[虚虛][拟擬](?:信用)?卡|visa|mastercard|vcc)/i;
 const PAYMENT_BENEFIT_REGEX = /[丝絲]滑(?:支付|付|[订訂][阅閱]|投流)|[订訂][阅閱][无無][忧憂]/;
 const PAYMENT_SERVICE_OFFER_REGEX = /(?:低[价價]|特[价價]|[优優]惠|[专專][业業]|承接)(?:代充|代付)|(?:代充|代付)服[务務]/;
+// A compact sales slogan supplies both the card and the promised benefit.
+// Require a standalone clause (or a use-case list immediately before it), so
+// questions and personal reports such as "能一卡搞定吗" / "一卡搞定了" stay out.
+// Runs after NFKC and whitespace folding, hence ASCII punctuation here.
+const PAYMENT_BUNDLE_PITCH_REGEX = /(?:^|[,、:;!。]|[订訂][阅閱]|投流|跨境[电電]商)[一1][张張]?(?:卡|💳\uFE0F?)(?:搞定|通付|通用)(?=$|[,、:;!。])/u;
 
 // Common Chinese spam / ad patterns
 const SPAM_PATTERNS: Array<{ pattern: RegExp; weight: number; label: string }> = [
@@ -511,6 +516,7 @@ export class ContentFilterService {
       const body = compact(part);
       if (!PAYMENT_USE_REGEX.test(body)) return false;
       if (PAYMENT_SERVICE_OFFER_REGEX.test(body)) return true;
+      if (PAYMENT_BUNDLE_PITCH_REGEX.test(body)) return true;
       const cardInBody = PAYMENT_CARD_REGEX.test(body);
       if (!cardInBody && !vccUsername) return false;
 

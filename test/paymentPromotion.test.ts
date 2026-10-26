@@ -4,6 +4,7 @@ import { CONTENT_SCAN_SEPARATOR, ContentFilterService, HIGH_CONFIDENCE_SPAM_LABE
 
 const REPORTED_NAME = '蓝色天空虚拟卡源头';
 const REPORTED_TEXT = 'Claude/GPT专用 Visa💳订阅 投流丝滑付';
+const CARD_BUNDLE_TEXT = '跨境电商、AI订阅，一💳搞定';
 const service = new ContentFilterService();
 const filter = service.getFilterConfig({ filter: { enabled: true, newUserLinkDelay: 0 } });
 
@@ -19,6 +20,19 @@ describe('payment promotion without a link', () => {
     'GPT订阅虚拟卡批发，支持投流',
     'ChatGPT/Claude 低价代充，秒到账',
     'Claude 代付服务，特价订阅',
+    CARD_BUNDLE_TEXT,
+    '跨境电商、AI订阅，一卡搞定',
+    '跨境电商、AI订阅，一张卡搞定！',
+    '跨境電商、AI訂閱，一張卡搞定',
+    '跨 境 电 商、ＡＩ 订 阅，一 💳 搞 定',
+    '跨境电商、AI订阅，一💳\uFE0F搞定',
+    '跨境电商、AI订阅，一💳搞\u200b定',
+    '跨境电商、AI订阅，一💳搞\u200d定',
+    '跨境电商 AI订阅\n一💳搞定',
+    '跨境电商AI订阅一💳搞定',
+    '一卡搞定，跨境电商、AI订阅',
+    '跨境电商，一卡通付',
+    'AI订阅，1卡通用',
   ])('blocks a commercial pitch: %s', (text) => {
     const result = service.analyzeText(text, filter);
     expect(result.blocked).toBe(true);
@@ -44,6 +58,15 @@ describe('payment promotion without a link', () => {
     'Visa 可以稳定支付 Claude 订阅',
     '虚拟卡批发商提供的卡可以订阅 Claude 吗？',
     'USDT 转账今天稳定到账了',
+    '跨境电商和 AI 订阅有什么关系？',
+    'AI订阅用 Visa 支付，今天终于搞定了',
+    '我用💳把AI订阅搞定了',
+    'AI订阅，能用一张卡搞定吗？',
+    '跨境电商、AI订阅，一💳搞定吗？',
+    'AI订阅，如何一卡搞定？',
+    '今天用一张卡搞定了AI订阅',
+    '跨境电商怎么用AI提高效率？',
+    '一卡搞定校园门禁和食堂支付',
   ])('allows ordinary discussion: %s', (text) => {
     expect(service.analyzeText(text, filter).blocked).toBe(false);
   });
@@ -57,6 +80,7 @@ describe('payment promotion without a link', () => {
   it('does not combine unrelated body and quote/keyboard/link fields', () => {
     const text = ['GPT订阅用 Visa', '一手货源'].join(CONTENT_SCAN_SEPARATOR);
     expect(service.analyzeText(text, filter).blocked).toBe(false);
+    expect(service.analyzeText(['AI订阅', '一💳搞定'].join(CONTENT_SCAN_SEPARATOR), filter).blocked).toBe(false);
   });
 
   it('keeps commercial heuristics out of degraded-mode decisive categories', () => {
@@ -113,6 +137,20 @@ describe('payment promotion through the moderation handler', () => {
       metadata: expect.objectContaining({ reasons: ['支付服务推广'], messageDeleted: true }),
     }));
     expect(h.api.banChatMember).not.toHaveBeenCalled();
+  });
+
+  it('deletes the card-bundle report from an ordinary name without a VCC username', async () => {
+    const h = harness(CARD_BUNDLE_TEXT, '李督 cha⭐');
+    // No link/new-member rule or suspicious identity is needed for this pitch.
+    h.settings.customSettings.filter = {
+      ...filter, blockUrls: false, blockInviteLinks: false, blockPhoneNumbers: false,
+    };
+    expect(await h.run()).toBe(true);
+    expect(h.api.deleteMessage).toHaveBeenCalledOnce();
+    expect(h.audit.log).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'message_filtered',
+      metadata: expect.objectContaining({ reasons: ['支付服务推广'], messageDeleted: true }),
+    }));
   });
 
   it('uses a seller nickname to corroborate a terse product pitch', async () => {
