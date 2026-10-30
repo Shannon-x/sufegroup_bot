@@ -21,7 +21,7 @@ import { redisService } from '../services/RedisService';
 import { CommandHandler } from '../commands/CommandHandler';
 import { sendTemporaryMessage } from '../utils/telegram';
 import { buildMention, displayName, escapeHtml } from '../utils/markdown';
-import { isRealHumanSender } from '../utils/sender';
+import { isRealHumanSender, speaksForGroup } from '../utils/sender';
 import { FloodControlHandler } from '../handlers/FloodControlHandler';
 import { ContentFilterHandler } from '../handlers/ContentFilterHandler';
 import { MembershipHandler } from '../handlers/MembershipHandler';
@@ -368,9 +368,11 @@ export class TelegramBot {
     }
 
     try {
-      const isAdmin = userId
+      // Posts made as the group or by its linked channel are the admins' own,
+      // even though their sender ids fail the getChatMember lookup.
+      const isAdmin = speaksForGroup(ctx) || (userId
         ? await this.groupService.isAdminCached(Number(chatId), userId, ctx.api)
-        : false;
+        : false);
 
       // Remember whether this group asked for content filtering, so that a
       // later outage can honour that answer instead of guessing at it.
@@ -489,6 +491,7 @@ export class TelegramBot {
     this.logDegradation(chatId, userId, error);
 
     if (!userId) return false;
+    if (speaksForGroup(ctx)) return false;
     if (this.lastKnownFilterEnabled.get(chatId) !== true) return false;
 
     const reasons = this.degradedReasons(ctx);
