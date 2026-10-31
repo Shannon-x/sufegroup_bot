@@ -1,5 +1,4 @@
 import { CommandContext } from 'grammy';
-import { InlineKeyboard } from 'grammy';
 import { BaseCommand } from './BaseCommand';
 import { MyContext } from '../services/TelegramBot';
 
@@ -95,9 +94,9 @@ export class ReverifyCommand extends BaseCommand {
 
       // Never post the raw verification URL: it is an identity-free bearer
       // token and this message goes to the whole group. See
-      // BaseCommand.buildVerificationDeepLink.
-      const deepLink = this.buildVerificationDeepLink(session.id);
-      if (!deepLink) {
+      // BaseCommand.buildVerificationEntry.
+      const entry = this.buildVerificationEntry(session.id);
+      if (!entry) {
         await this.verificationService.cancelSession(session.id).catch(() => {});
         await ctx.reply('❌ 机器人未配置用户名（BOT_USERNAME），无法生成验证入口', {
           reply_to_message_id: replyTo
@@ -111,12 +110,10 @@ export class ReverifyCommand extends BaseCommand {
         ttlMinutes: settings.ttlMinutes,
       });
 
-      const keyboard = new InlineKeyboard().url('🔐 点击验证', deepLink);
-
       let message;
       try {
         message = await ctx.api.sendMessage(Number(groupId), welcomeText, {
-          reply_markup: keyboard,
+          reply_markup: entry.keyboard,
           parse_mode: 'HTML'
         });
       } catch (sendError) {

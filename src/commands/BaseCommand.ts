@@ -1,12 +1,12 @@
-import { Bot, CommandContext } from 'grammy';
+import { Bot, CommandContext, InlineKeyboard } from 'grammy';
 import { MyContext } from '../services/TelegramBot';
 import { UserService } from '../services/UserService';
 import { GroupService } from '../services/GroupService';
 import { VerificationService } from '../services/VerificationService';
 import { AuditService } from '../services/AuditService';
 import { Logger } from '../utils/logger';
-import { config } from '../config/config';
 import { renderWelcomeTemplate, WelcomeTemplateValues } from '../utils/welcomeTemplate';
+import { botStartVerificationLink, buildGroupVerificationKeyboard } from '../utils/verificationLinks';
 
 /**
  * Telegram admin rights a command can demand on top of the plain
@@ -296,28 +296,33 @@ export abstract class BaseCommand {
   }
 
   /**
-   * Identity-bound entry point into the verification flow, or null when the bot
-   * username is not configured.
+   * Identity-bound entry points into the verification flow, or null when the
+   * bot username is not configured: the inline keyboard to post, and a link to
+   * print for clients whose buttons do not work.
    *
    * VerificationService.generateVerificationUrl() mints an *identity-free
    * bearer token*: whoever reads that URL can complete the verification on the
    * target's behalf, so it must never be posted in a group. The deep links
-   * below carry only the session id, and both landing points
+   * used here carry only the session id, and both landing points
    * (PrivateChatHandler.handleStartCommand and the Mini App
    * /api/miniapp/verify* endpoints) reject a session whose userId is not the
-   * caller — which makes them safe to show publicly. Same links as the join
-   * path in MembershipHandler.
+   * caller — which makes them safe to show publicly. Same keyboard as the join
+   * path in MembershipHandler (utils/verificationLinks).
+   *
+   * The printed link is the private-chat deep link rather than the Mini App
+   * one: it is the only form every client can open (Telegram X and other
+   * third-party clients reject Mini App links outright).
    */
-  protected buildVerificationDeepLink(sessionId: string): string | null {
-    const botUsername = config.bot.username;
-    if (!botUsername) {
+  protected buildVerificationEntry(
+    sessionId: string
+  ): { keyboard: InlineKeyboard; copyLink: string } | null {
+    const keyboard = buildGroupVerificationKeyboard(sessionId);
+    const copyLink = botStartVerificationLink(sessionId);
+    if (!keyboard || !copyLink) {
       this.logger.error('BOT_USERNAME is not configured; cannot build a verification deep link');
       return null;
     }
-
-    return config.bot.miniAppShortName && config.bot.webhookDomain
-      ? `https://t.me/${botUsername}/${config.bot.miniAppShortName}?startapp=verify_${sessionId}`
-      : `https://t.me/${botUsername}?start=verify_${sessionId}`;
+    return { keyboard, copyLink };
   }
 
   /**
