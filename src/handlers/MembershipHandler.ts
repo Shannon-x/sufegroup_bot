@@ -1,6 +1,6 @@
 import { Bot } from 'grammy';
 import { ChatMember, ChatMemberRestricted } from 'grammy/types';
-import { InlineKeyboard } from 'grammy';
+import { buildGroupVerificationKeyboard } from '../utils/verificationLinks';
 import { MyContext } from '../services/TelegramBot';
 import { UserService } from '../services/UserService';
 import { GroupService } from '../services/GroupService';
@@ -766,18 +766,13 @@ export class MembershipHandler {
       // always posted the hardcoded copy below.
       const welcomeText = this.renderWelcomeTemplate(settings.welcomeTemplate, user, group, settings.ttlMinutes);
 
-      const botUsername = config.bot.username || 'bot';
-      const keyboard = new InlineKeyboard();
-
-      if (config.bot.miniAppShortName && config.bot.webhookDomain) {
-        // Direct Mini App link — single click, no external browser
-        const miniAppUrl = `https://t.me/${botUsername}/${config.bot.miniAppShortName}?startapp=verify_${sessionId}`;
-        keyboard.url('🔐 点击验证', miniAppUrl);
-      } else {
-        // Fallback: bot private chat → external webpage
-        const verifyStartUrl = `https://t.me/${botUsername}?start=verify_${sessionId}`;
-        keyboard.url('🔐 点击验证', verifyStartUrl);
-      }
+      // Mini App button (official clients) plus a private-chat fallback row for
+      // third-party clients that cannot open Mini App links — see
+      // utils/verificationLinks.
+      const keyboard = buildGroupVerificationKeyboard(sessionId, {
+        ...config.bot,
+        username: config.bot.username || 'bot',
+      })!;
 
       const message = await ctx.api.sendMessage(
         Number(group.id),

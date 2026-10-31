@@ -71,24 +71,33 @@ export class PrivateChatHandler {
       const remainingMs = session.expiresAt.getTime() - Date.now();
       const remainingMinutes = Math.ceil(remainingMs / 60000);
 
+      // External webpage: a bearer link, so it may only ever be sent here, in
+      // the owner's private chat, after the ownership check above.
+      const verifyUrl = this.verificationService.generateVerificationUrl(
+        session.userId,
+        session.groupId,
+        session.id
+      );
       const keyboard = new InlineKeyboard();
+      let browserHint = '';
 
       if (config.bot.miniAppShortName && config.bot.webhookDomain) {
-        // Open verification inside Mini App (no external browser)
+        // Open verification inside Mini App (no external browser). Third-party
+        // clients such as Telegram X cannot open web_app buttons, so the
+        // browser page is offered underneath as a fallback — without it those
+        // users had no way to verify and were removed on expiry.
         const miniAppUrl = `${config.bot.webhookDomain}/mini-app?startapp=verify_${session.id}`;
-        keyboard.webApp('🔐 开始验证', miniAppUrl);
+        keyboard
+          .webApp('🔐 开始验证', miniAppUrl)
+          .row()
+          .url('🌐 打不开？用浏览器验证', verifyUrl);
+        browserHint = '\n\n如果「开始验证」打不开（例如 Telegram X 等第三方客户端），请点「用浏览器验证」。';
       } else {
-        // Fallback: external webpage
-        const verifyUrl = this.verificationService.generateVerificationUrl(
-          session.userId,
-          session.groupId,
-          session.id
-        );
         keyboard.url('🔐 开始验证', verifyUrl);
       }
 
       await ctx.reply(
-        `您好！请点击下方按钮完成 **${group.title}** 群组的验证。\n\n⏱ 验证有效时间：${remainingMinutes} 分钟\n\n⚠️ 请注意：验证链接仅供您个人使用，请勿分享给他人。`,
+        `您好！请点击下方按钮完成 **${group.title}** 群组的验证。\n\n⏱ 验证有效时间：${remainingMinutes} 分钟${browserHint}\n\n⚠️ 请注意：验证链接仅供您个人使用，请勿分享给他人。`,
         {
           reply_markup: keyboard,
           parse_mode: 'Markdown'
