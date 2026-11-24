@@ -10,7 +10,7 @@
     "migration:run": "typeorm migration:run -d dist/config/database.js",
     "migration:generate": "typeorm migration:generate -d src/config/database.ts",
     "migration:create": "typeorm migration:create",
-    "lint": "eslint src/**/*.ts",
+    "lint": "eslint src",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
@@ -46,15 +46,16 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@types/ejs": "^3.1.5",
     "@types/jsonwebtoken": "^9.0.10",
-    "@types/node": "^20.11.5",
-    "@typescript-eslint/eslint-plugin": "^6.19.1",
-    "@typescript-eslint/parser": "^6.19.1",
-    "eslint": "^8.56.0",
+    "@types/node": "^20.19.43",
+    "eslint": "^9.39.5",
+    "globals": "^17.14.0",
     "nodemon": "^3.0.3",
     "ts-node": "^10.9.2",
     "typescript": "^5.3.3",
+    "typescript-eslint": "^8.74.0",
     "vitest": "^4.1.8"
   }
 }
