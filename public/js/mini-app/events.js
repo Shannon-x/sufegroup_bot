@@ -20,6 +20,7 @@ document.addEventListener('DOMContentLoaded', function(){
 
   // ── 设置 ──
   document.getElementById('t-verify').addEventListener('click', togVerify);
+  document.getElementById('t-xbgate').addEventListener('click', togXboardGate);
   document.getElementById('btn-ttl').addEventListener('click', cycleTTL);
   document.getElementById('btn-auto-action').addEventListener('click', cycleAutoAction);
 

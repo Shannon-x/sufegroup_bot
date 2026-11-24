@@ -26,6 +26,8 @@ import { FloodControlHandler } from '../handlers/FloodControlHandler';
 import { ContentFilterHandler } from '../handlers/ContentFilterHandler';
 import { MembershipHandler } from '../handlers/MembershipHandler';
 import { PrivateChatHandler } from '../handlers/PrivateChatHandler';
+import { XboardGateHandler, GATE_RECHECK_CALLBACK } from '../handlers/XboardGateHandler';
+import { XboardGateService } from './XboardGateService';
 
 export interface SessionData {
   step?: string;
@@ -151,6 +153,7 @@ export class TelegramBot {
   private contentFilterHandler: ContentFilterHandler;
   private membershipHandler: MembershipHandler;
   private privateChatHandler: PrivateChatHandler;
+  private xboardGateHandler: XboardGateHandler;
 
   constructor() {
     this.logger = new Logger('TelegramBot');
@@ -177,10 +180,14 @@ export class TelegramBot {
     this.contentFilterHandler = new ContentFilterHandler(
       this.bot, this.contentFilterService, this.auditService
     );
+    const xboardGate = new XboardGateService();
     this.membershipHandler = new MembershipHandler(
       this.bot, this.userService, this.groupService,
       this.verificationService, this.auditService, this.contentFilterService,
-      this.levelService
+      this.levelService, undefined, xboardGate
+    );
+    this.xboardGateHandler = new XboardGateHandler(
+      this.groupService, this.verificationService, this.auditService, xboardGate
     );
     this.privateChatHandler = new PrivateChatHandler(
       this.verificationService, this.groupService
@@ -245,6 +252,15 @@ export class TelegramBot {
         await this.membershipHandler.handleNewChatMembers(ctx);
       } catch (error) {
         this.logger.error('Error handling new chat members', error);
+      }
+    });
+
+    // Xboard panel gate: join requests in groups that only admit panel users.
+    this.bot.on('chat_join_request', async (ctx) => {
+      try {
+        await this.xboardGateHandler.handleJoinRequest(ctx);
+      } catch (error) {
+        this.logger.error('Error handling chat join request', error);
       }
     });
 
@@ -319,6 +335,16 @@ export class TelegramBot {
       }
     });
 
+    // "I've bound it, check again" under the gate's private guidance message.
+    this.bot.callbackQuery(GATE_RECHECK_CALLBACK, async (ctx) => {
+      try {
+        await this.xboardGateHandler.handleRecheck(ctx);
+      } catch (error) {
+        this.logger.error('Error handling gate recheck', error);
+        await ctx.answerCallbackQuery().catch(() => undefined);
+      }
+    });
+
     // Commands. The per-command rate limiter lives inside setup(), so anything
     // registered after this line is covered by it.
     this.commandHandler.setup();
@@ -327,10 +353,24 @@ export class TelegramBot {
     // one command nobody could rate limit — it is now behind it like the rest.
     this.bot.command('start', async (ctx) => {
       try {
+        // Back from the panel's one-click binding page.
+        if (ctx.match === 'xbgate' && (await this.xboardGateHandler.handleStartReturn(ctx))) return;
         await this.privateChatHandler.handleStartCommand(ctx);
       } catch (error) {
         this.logger.error('Error handling start command', error);
       }
+    });
+
+    // A subscription link sent privately by someone whose join request the
+    // Xboard gate is holding. Anything else passes through untouched.
+    this.bot.on('message', async (ctx, next) => {
+      let handled = false;
+      try {
+        handled = await this.xboardGateHandler.handlePrivateMessage(ctx);
+      } catch (error) {
+        this.logger.error('Error handling gate private message', error);
+      }
+      if (!handled) await next();
     });
 
     // Error handler

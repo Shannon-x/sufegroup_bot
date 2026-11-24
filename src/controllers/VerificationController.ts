@@ -14,6 +14,7 @@ import { escapeHtml } from '../utils/markdown';
 import { avatarInitial } from '../utils/avatar';
 import { getUserAvatarDataUrl } from '../utils/avatarPhoto';
 import { assessCaptchaResult } from './captchaGuard';
+import { XboardGateService } from '../services/XboardGateService';
 import {
   acquireCommitLock,
   handleFailedCommit,
@@ -28,13 +29,17 @@ interface VerifyQuerystring {
 
 interface VerifyBody {
   token: string;
-  turnstileToken: string;
+  /** Absent on groups behind the Xboard gate, which skip the captcha. */
+  turnstileToken?: string;
+  /** Xboard gate: the member's subscription link, when they still need to bind. */
+  subscribeUrl?: string;
 }
 
 export class VerificationController {
   private verificationService: VerificationService;
   private userService: UserService;
   private groupService: GroupService;
+  private xboardGate = new XboardGateService();
   private auditService: AuditService;
   private turnstileService: TurnstileService;
   private rateLimiter: RateLimitMiddleware;
@@ -123,7 +128,14 @@ export class VerificationController {
 
         const avatarUrl = await getUserAvatarDataUrl(this.bot.getBot().api, user.id);
 
+        const groupSettings = await this.groupService.getSettings(tokenData.groupId).catch(() => null);
+        const needsBind = await this.xboardGate.requiresBinding(groupSettings, tokenData.userId);
+
         return reply.view('verify', {
+          captchaRequired: !this.xboardGate.isEnabledFor(groupSettings),
+          needsBind,
+          panelName: config.xboardGate.panelName,
+          panelUrl: /^https:\/\//i.test(config.xboardGate.panelUrl) ? config.xboardGate.panelUrl : '',
           token,
           siteKey: this.turnstileService.getSiteKey(),
           // Binds the solved token to this session. Turnstile echoes cData back
@@ -155,6 +167,8 @@ export class VerificationController {
       },
       async (request, reply) => {
         const { token, turnstileToken } = request.body;
+        const subscribeUrl =
+          typeof request.body.subscribeUrl === 'string' ? request.body.subscribeUrl.slice(0, 2048) : undefined;
         const remoteIp = request.ip;
 
         this.logger.info('Verification request received', {
@@ -189,93 +203,115 @@ export class VerificationController {
           });
         }
 
-        // Check attempts
-        if (session.attemptCount >= 5) {
-          await this.auditService.log({
-            groupId: session.groupId,
-            userId: session.userId,
-            action: 'user_failed_verification',
-            details: 'Too many attempts',
-            ip: remoteIp
-          });
-
-          try {
-            const user = await this.userService.findById(session.userId);
-            const userMention = formatUserMention(user, session.userId);
-
-            await sendTemporaryMessage(
-              this.bot.getBot(),
-              Number(session.groupId),
-              `❌ ${userMention} 验证失败（尝试次数过多），已被移除。` +
-                (config.defaults.verificationRejoinCooldownSeconds > 0
-                  ? `${config.defaults.verificationRejoinCooldownSeconds} 秒后可重新加入并再次验证。`
-                  : '可重新加入并再次验证。'),
-              { parse_mode: 'HTML' }
-            );
-
-            await kickUser(
-              this.bot.getBot(),
-              Number(session.groupId),
-              Number(session.userId),
-              config.defaults.verificationRejoinCooldownSeconds
-            );
-          } catch (error) {
-            this.logger.error('Failed to handle too-many-attempts', error);
-          }
-
-          return reply.code(429).send({
-            success: false,
-            message: '尝试次数过多，请稍后再试'
-          });
+        // Groups behind the Xboard gate replace the captcha with the panel
+        // account itself (see MiniAppController). Never charges an attempt.
+        let gateSettings;
+        try {
+          gateSettings = await this.groupService.getSettings(session.groupId);
+        } catch (error) {
+          this.logger.error('Could not read group settings for the Xboard gate', error);
+          return reply.code(503).send({ success: false, message: '验证服务暂时不可用，请稍后重试' });
         }
 
-        // Verify Turnstile. The same acceptance rules as the Mini App endpoint —
-        // this page hands out the identical pass, so `success` alone was the
-        // cheap way past hostname, freshness and single-use checks.
-        const turnstileResult = await this.turnstileService.verify(turnstileToken, remoteIp);
-        const assessment = await assessCaptchaResult({
-          provider: 'turnstile',
-          result: turnstileResult,
-          token: turnstileToken,
-          sessionId: session.id,
-          // views/verify.ejs renders Turnstile implicitly, and implicit
-          // rendering does accept data-cdata — the earlier claim that this page
-          // "has no way to pass cData" was simply wrong, and it left the
-          // binding switched off on the one endpoint an attacker can reach
-          // without a Telegram client.
-          requireCdata: true,
-        });
+        if (this.xboardGate.isEnabledFor(gateSettings)) {
+          const gate = await this.xboardGate.resolveAtVerification(gateSettings, session.userId, subscribeUrl);
+          if (!gate.ok) {
+            return reply.code(gate.httpStatus).send({ success: false, message: gate.message, needsBind: gate.needsBind });
+          }
+        } else {
+          if (typeof turnstileToken !== 'string' || !turnstileToken) {
+            return reply.code(400).send({ success: false, message: '请先完成人机验证' });
+          }
 
-        if (!assessment.ok) {
-          if (assessment.kind === 'infrastructure') {
-            // Undecidable, not failed. Charging an attempt here is how a user
-            // who *had* passed the challenge got kicked for following our own
-            // "please retry" advice five times.
-            this.logger.error('Turnstile result could not be assessed', {
-              userId: session.userId,
+          // Check attempts
+          if (session.attemptCount >= 5) {
+            await this.auditService.log({
               groupId: session.groupId,
-              reason: assessment.reason
+              userId: session.userId,
+              action: 'user_failed_verification',
+              details: 'Too many attempts',
+              ip: remoteIp
             });
 
-            return reply.code(503).send({
+            try {
+              const user = await this.userService.findById(session.userId);
+              const userMention = formatUserMention(user, session.userId);
+
+              await sendTemporaryMessage(
+                this.bot.getBot(),
+                Number(session.groupId),
+                `❌ ${userMention} 验证失败（尝试次数过多），已被移除。` +
+                  (config.defaults.verificationRejoinCooldownSeconds > 0
+                    ? `${config.defaults.verificationRejoinCooldownSeconds} 秒后可重新加入并再次验证。`
+                    : '可重新加入并再次验证。'),
+                { parse_mode: 'HTML' }
+              );
+
+              await kickUser(
+                this.bot.getBot(),
+                Number(session.groupId),
+                Number(session.userId),
+                config.defaults.verificationRejoinCooldownSeconds
+              );
+            } catch (error) {
+              this.logger.error('Failed to handle too-many-attempts', error);
+            }
+
+            return reply.code(429).send({
               success: false,
-              message: '验证服务暂时不可用，请稍后重试'
+              message: '尝试次数过多，请稍后再试'
             });
           }
 
-          // A real rejection is the only thing that counts against the user.
-          await this.verificationService.incrementAttempts(session.id);
-          this.logger.warn('Turnstile verification failed', {
-            userId: session.userId,
-            groupId: session.groupId,
-            reason: assessment.reason,
-            errors: turnstileResult['error-codes']
+          // Verify Turnstile. The same acceptance rules as the Mini App endpoint —
+          // this page hands out the identical pass, so `success` alone was the
+          // cheap way past hostname, freshness and single-use checks.
+          const turnstileResult = await this.turnstileService.verify(turnstileToken, remoteIp);
+          const assessment = await assessCaptchaResult({
+            provider: 'turnstile',
+            result: turnstileResult,
+            token: turnstileToken,
+            sessionId: session.id,
+            // views/verify.ejs renders Turnstile implicitly, and implicit
+            // rendering does accept data-cdata — the earlier claim that this page
+            // "has no way to pass cData" was simply wrong, and it left the
+            // binding switched off on the one endpoint an attacker can reach
+            // without a Telegram client.
+            requireCdata: true,
           });
 
-          return reply.code(400).send({
-            success: false,
-            message: '人机验证失败，请重试'
-          });
+          if (!assessment.ok) {
+            if (assessment.kind === 'infrastructure') {
+              // Undecidable, not failed. Charging an attempt here is how a user
+              // who *had* passed the challenge got kicked for following our own
+              // "please retry" advice five times.
+              this.logger.error('Turnstile result could not be assessed', {
+                userId: session.userId,
+                groupId: session.groupId,
+                reason: assessment.reason
+              });
+
+              return reply.code(503).send({
+                success: false,
+                message: '验证服务暂时不可用，请稍后重试'
+              });
+            }
+
+            // A real rejection is the only thing that counts against the user.
+            await this.verificationService.incrementAttempts(session.id);
+            this.logger.warn('Turnstile verification failed', {
+              userId: session.userId,
+              groupId: session.groupId,
+              reason: assessment.reason,
+              errors: turnstileResult['error-codes']
+            });
+
+            return reply.code(400).send({
+              success: false,
+              message: '人机验证失败，请重试'
+            });
+          }
+
         }
 
         // Single-flight the commit. Concurrent submits for one session would

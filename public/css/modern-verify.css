@@ -281,6 +281,25 @@ body {
   background: var(--error);
 }
 
+/* Xboard gate: subscription link */
+.bind-section {
+  margin-bottom: 20px;
+  text-align: left;
+}
+.bind-title { font-size: 15px; font-weight: 600; color: var(--ink); margin-bottom: 4px; }
+.bind-sub { font-size: 13px; color: var(--muted); margin-bottom: 10px; line-height: 1.5; }
+.bind-input {
+  width: 100%; box-sizing: border-box;
+  padding: 10px 12px; font-size: 14px;
+  color: var(--ink); background: var(--canvas);
+  border: 1px solid var(--hairline); border-radius: 8px; outline: none;
+}
+.bind-input:focus { border-color: var(--primary); }
+.bind-link {
+  display: inline-block; margin-top: 8px;
+  font-size: 13px; color: var(--primary); text-decoration: none;
+}
+
 /* Turnstile */
 .captcha-section {
   margin-top: 24px;

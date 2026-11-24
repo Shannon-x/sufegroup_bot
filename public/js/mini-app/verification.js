@@ -13,6 +13,130 @@ var _vSessionId = null;
 var _vTotalSeconds = 0;
 var _vRemaining = 0;
 var _vMode = 'group';
+var _vNeedsBind = false;
+var _vCaptchaRequired = true;
+var _vBoundViaPanel = false;
+var _vPollTimer = null;
+var _vOneClick = false;
+
+/** Xboard gate: show the binding options when the server asks for them. */
+function showBindField(data) {
+  var box = document.getElementById('v-bind');
+  if (!box) return;
+  _vNeedsBind = !!data.needsBind;
+  box.style.display = _vNeedsBind ? 'block' : 'none';
+  if (!_vNeedsBind) return;
+  if (data.panelName) {
+    document.getElementById('v-panel-name').textContent = data.panelName;
+    var names = document.querySelectorAll('.v-panel-name-2');
+    for (var i = 0; i < names.length; i++) names[i].textContent = data.panelName;
+  }
+  var link = document.getElementById('v-panel-link');
+  if (data.panelUrl) {
+    link.href = data.panelUrl;
+    link.style.display = 'inline-block';
+    link.addEventListener('click', function(e) {
+      if (tg.openLink) { e.preventDefault(); tg.openLink(data.panelUrl); }
+    });
+  }
+  // One-click binding on the panel is the main path; pasting the
+  // subscription link stays one tap away for anyone who cannot sign in.
+  _vOneClick = !_vCaptchaRequired && !!data.bindLinkAvailable;
+  document.getElementById('v-oneclick-box').style.display = _vOneClick ? 'block' : 'none';
+  setPasteVisible(!_vOneClick);
+  document.getElementById('v-sub').textContent = _vCaptchaRequired
+    ? '请填写订阅链接并完成人机验证以加入群组'
+    : _vOneClick
+      ? '绑定面板账号后即可开始聊天，只需一次'
+      : '粘贴你的订阅链接，绑定面板账号后即可开始聊天';
+}
+
+/** In one-click mode the submit button belongs to the paste fallback. */
+function setPasteVisible(visible) {
+  document.getElementById('v-paste-box').classList.toggle('collapsed', !visible);
+  // On gated groups the captcha section holds only the submit button and the
+  // messages; the messages must stay visible either way.
+  document.getElementById('v-captcha').classList.toggle('oneclick', !visible);
+  var toggle = document.getElementById('v-paste-toggle');
+  if (toggle) toggle.style.display = visible ? 'none' : '';
+  // One primary button at a time: with the paste form open, submit leads.
+  var oneClick = document.getElementById('v-oneclick');
+  if (oneClick && visible) oneClick.classList.add('secondary');
+}
+
+async function startOneClickBind() {
+  var btn = document.getElementById('v-oneclick');
+  hideVerifyMsg();
+  btn.disabled = true;
+  try {
+    var res = await fetch('/api/miniapp/verify/bind-link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: initData, sessionId: _vSessionId })
+    });
+    var data = await res.json();
+    if (!res.ok || !data.url) throw new Error(data.error || 'unavailable');
+    if (tg.openLink) tg.openLink(data.url); else window.open(data.url, '_blank', 'noopener');
+    btn.classList.add('secondary');
+    btn.textContent = '重新打开' + document.getElementById('v-panel-name').textContent;
+    document.getElementById('v-wait').style.display = 'flex';
+    startBindPolling();
+  } catch (e) {
+    showVerifyMsg('error', '暂时无法打开一键绑定，请稍后重试，或改为粘贴订阅链接');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function startBindPolling() {
+  if (_vPollTimer) return;
+  _vPollTimer = setInterval(pollBindStatus, 3000);
+}
+
+function stopBindPolling() {
+  if (_vPollTimer) clearInterval(_vPollTimer);
+  _vPollTimer = null;
+}
+
+async function pollBindStatus() {
+  if (_vBoundViaPanel) return;
+  try {
+    var res = await fetch('/api/miniapp/verify/gate-status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: initData, sessionId: _vSessionId })
+    });
+    if (!res.ok) return; // 429 or a blip: the next tick tries again.
+    var data = await res.json();
+    if (data.banned) {
+      stopBindPolling();
+      document.getElementById('v-wait').style.display = 'none';
+      showVerifyMsg('error', '这个面板账号已被停用，无法入群');
+    } else if (data.bound) {
+      stopBindPolling();
+      _vBoundViaPanel = true;
+      document.getElementById('v-wait').style.display = 'none';
+      document.getElementById('v-oneclick').style.display = 'none';
+      document.getElementById('v-paste-toggle').style.display = 'none';
+      // submitVerification clears messages before its first await, so the
+      // note goes up after it starts.
+      submitVerification();
+      showVerifyMsg('success', '✅ 已绑定面板账号，正在为你解除禁言…');
+    }
+  } catch (e) {
+    // Offline for a moment; keep polling.
+  }
+}
+
+function submitLabel() {
+  if (_vCaptchaRequired) return '完成验证';
+  return _vNeedsBind ? '绑定并加入' : '加入群组';
+}
+
+/** A subscription link carries a 32-hex token, in ?token= or as the last path segment. */
+function looksLikeSubscribeUrl(url) {
+  return /^https?:\/\/\S+$/i.test(url) && /(?:[?&]token=|\/)[a-f0-9]{32}(?:[\/?&#]|$)/i.test(url);
+}
 
 function verificationEndpoints() {
   if (_vMode === 'chatwoot') {
@@ -63,6 +187,9 @@ async function initVerification(sessionId, mode) {
       ? '请完成人机验证，验证通过后客服系统才会接收您的消息'
       : '请完成人机验证以加入群组';
     document.getElementById('v-group-name').textContent = data.groupName;
+    // Groups behind the panel gate use the panel account in place of the captcha.
+    _vCaptchaRequired = !(_vMode === 'group' && data.captchaRequired === false);
+    if (_vMode === 'group') showBindField(data);
     var fullName = data.userFirstName + (data.userLastName ? ' ' + data.userLastName : '');
     // NFKC-normalise (folds 𝒦/fancy Unicode → K) then take the first code point
     // so surrogate pairs (fancy letters / emoji) aren't split into a broken glyph.
@@ -88,8 +215,18 @@ async function initVerification(sessionId, mode) {
     document.getElementById('v-user-section').style.display = 'flex';
     document.getElementById('v-timer-section').style.display = 'block';
 
+    if (!_vCaptchaRequired) {
+      document.getElementById('v-turnstile-container').style.display = 'none';
+      var hcBox = document.getElementById('v-hcaptcha-container');
+      if (hcBox) hcBox.style.display = 'none';
+      var btn = document.getElementById('v-submit');
+      btn.disabled = false;
+      btn.textContent = submitLabel();
+      if (!_vNeedsBind) document.getElementById('v-sub').textContent = '已识别你的面板账号，点下方按钮即可开始聊天';
+    }
+
     // Verify Dual Nav
-    if (HCAPTCHA_SITE_KEY) {
+    if (_vCaptchaRequired && HCAPTCHA_SITE_KEY) {
       var dnav = document.getElementById('v-dual-nav');
       if (dnav) dnav.style.display = 'block';
     }
@@ -110,7 +247,9 @@ async function initVerification(sessionId, mode) {
     }, 1000);
 
     // Render Turnstile
-    if (window.turnstile) {
+    if (!_vCaptchaRequired) {
+      // Nothing to render: the panel account is the check.
+    } else if (window.turnstile) {
       renderTurnstile();
     } else {
       // Wait for Turnstile script to load (cap at ~10s to avoid an endless poll
@@ -248,7 +387,16 @@ function updateVerifyTimer() {
 }
 
 async function submitVerification() {
-  if (!_vTurnstileToken && !_vHcaptchaToken) {
+  var subscribeUrl = '';
+  if (_vNeedsBind && !_vBoundViaPanel) {
+    subscribeUrl = (document.getElementById('v-sub-url').value || '').trim();
+    // Checked before the captcha is spent: a solved token is single-use.
+    if (!looksLikeSubscribeUrl(subscribeUrl)) {
+      showVerifyMsg('error', '请粘贴完整的订阅链接（以 https:// 开头）');
+      return;
+    }
+  }
+  if (_vCaptchaRequired && !_vTurnstileToken && !_vHcaptchaToken) {
     showVerifyMsg('error', '请先完成人机验证');
     return;
   }
@@ -268,13 +416,15 @@ async function submitVerification() {
         initData: initData,
         sessionId: _vSessionId,
         turnstileToken: _vTurnstileToken || undefined,
-        hcaptchaToken: _vHcaptchaToken || undefined
+        hcaptchaToken: _vHcaptchaToken || undefined,
+        subscribeUrl: subscribeUrl || undefined
       })
     });
     var data = await res.json();
 
     if (data.success) {
       clearInterval(_vTimer);
+      stopBindPolling();
       document.getElementById('v-done-sub').textContent =
         _vMode === 'chatwoot'
           ? '验证成功。请返回客服聊天并重新发送您的消息。'
@@ -286,13 +436,20 @@ async function submitVerification() {
       }, 3000);
     } else {
       showVerifyMsg('error', data.message || '验证失败，请重试');
+      if (_vBoundViaPanel) {
+        // The panel said bound but the submit did not go through: let the
+        // member retry with the button.
+        document.getElementById('v-captcha').classList.remove('oneclick');
+      }
       btn.disabled = false;
       btn.classList.remove('loading');
-      btn.textContent = '完成验证';
+      btn.textContent = submitLabel();
       // Reset Tokens for retry
       _vTurnstileToken = null;
       _vHcaptchaToken = null;
-      if (_activeCaptcha === 'cf' && window.turnstile) {
+      if (!_vCaptchaRequired) {
+        // No widget to reset.
+      } else if (_activeCaptcha === 'cf' && window.turnstile) {
         renderTurnstile();
       } else if (_activeCaptcha === 'hc' && window.hcaptcha && _hcWidgetId !== null) {
         window.hcaptcha.reset(_hcWidgetId);
@@ -302,7 +459,7 @@ async function submitVerification() {
     showVerifyMsg('error', '网络错误，请重试');
     btn.disabled = false;
     btn.classList.remove('loading');
-    btn.textContent = '完成验证';
+    btn.textContent = submitLabel();
   }
 }
 
@@ -319,6 +476,14 @@ function hideVerifyMsg() {
 
 // Verification button event
 document.getElementById('v-submit').addEventListener('click', submitVerification);
+var _vOneClickBtn = document.getElementById('v-oneclick');
+if (_vOneClickBtn) _vOneClickBtn.addEventListener('click', startOneClickBind);
+var _vPasteToggle = document.getElementById('v-paste-toggle');
+if (_vPasteToggle) _vPasteToggle.addEventListener('click', function() { setPasteVisible(true); });
+// Back from the panel: check at once instead of waiting for the next tick.
+document.addEventListener('visibilitychange', function() {
+  if (!document.hidden && _vPollTimer) pollBindStatus();
+});
 document.getElementById('v-done-close').addEventListener('click', function() {
   if (tg.close) tg.close();
 });

@@ -189,6 +189,18 @@ export class RateLimitMiddleware {
     });
   }
 
+  /**
+   * The verification page polls this while the member confirms the binding on
+   * the panel (every 3 s), so it gets more room than the page itself.
+   */
+  async gateStatusLimit(request: FastifyRequest, reply: FastifyReply): Promise<boolean> {
+    return this.checkRateLimit(request, reply, {
+      windowMs: 60000,
+      maxRequests: 30,
+      keyPrefix: 'gate-status'
+    });
+  }
+
   async apiVerifyLimit(request: FastifyRequest, reply: FastifyReply): Promise<boolean> {
     return this.checkRateLimit(request, reply, {
       windowMs: 60000, // 1 minute

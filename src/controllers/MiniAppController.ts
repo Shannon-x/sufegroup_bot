@@ -9,6 +9,7 @@ import { VerificationService } from '../services/VerificationService';
 import { TurnstileService } from '../services/TurnstileService';
 import { HCaptchaService } from '../services/HCaptchaService';
 import { AuditService } from '../services/AuditService';
+import { XboardGateService } from '../services/XboardGateService';
 import { Logger } from '../utils/logger';
 import { config } from '../config/config';
 import { TelegramBot } from '../services/TelegramBot';
@@ -81,6 +82,7 @@ const UpdateSettingsBody = z.object({
     verificationEnabled: z.boolean().optional(),
     ttlMinutes: z.number().int().min(1).max(60).optional(),
     autoAction: z.enum(['mute', 'kick']).optional(),
+    xboardGate: z.boolean().optional(),
     filter: FilterUpdateSchema,
     customTitles: z.array(z.object({
       minLevel: z.number().int().min(1).max(100),
@@ -114,6 +116,7 @@ export class MiniAppController {
   private hcaptchaService: HCaptchaService;
   private auditService: AuditService;
   private rateLimiter: RateLimitMiddleware;
+  private xboardGate = new XboardGateService();
   private bot: TelegramBot;
   private logger: Logger;
 
@@ -190,6 +193,9 @@ export class MiniAppController {
         verificationEnabled: settings.verificationEnabled,
         ttlMinutes: settings.ttlMinutes,
         autoAction: settings.autoAction,
+        // Only offered when the deployment can reach a panel.
+        xboardGateAvailable: this.xboardGate.isConfigured(),
+        xboardGate: settings.customSettings?.xboardGate === true,
         filter: filterConfig,
         customTitles: customTitles || LevelService.getDefaultTitles(),
       });
@@ -233,6 +239,15 @@ export class MiniAppController {
           mergedFilter.flood = { ...existingFilter.flood, ...incoming.flood };
         }
         cs.filter = mergedFilter;
+        safeUpdates.customSettings = cs;
+      }
+
+      if (typeof updates.xboardGate === 'boolean') {
+        if (updates.xboardGate && !this.xboardGate.isConfigured()) {
+          return reply.code(400).send({ error: 'Xboard gate is not configured on this bot' });
+        }
+        const cs = safeUpdates.customSettings || settings.customSettings || {};
+        cs.xboardGate = updates.xboardGate;
         safeUpdates.customSettings = cs;
       }
 
@@ -457,7 +472,20 @@ export class MiniAppController {
       // back to the initial-letter avatar).
       const avatarUrl = await getUserAvatarDataUrl(this.bot.getBot().api, userId);
 
+      // Xboard gate: ask for the subscription link on the same page as the
+      // captcha when this member is not a confirmed panel user yet.
+      const groupSettings = await this.groupService.getSettings(session.groupId).catch(() => null);
+      const needsBind = await this.xboardGate.requiresBinding(groupSettings, userId);
+
       return reply.send({
+        // Gated groups use the panel account in place of the captcha.
+        captchaRequired: !this.xboardGate.isEnabledFor(groupSettings),
+        needsBind,
+        panelName: needsBind ? config.xboardGate.panelName : undefined,
+        panelUrl: needsBind && /^https:\/\//i.test(config.xboardGate.panelUrl) ? config.xboardGate.panelUrl : undefined,
+        // One-click binding on the panel, offered whenever the panel has an
+        // https address; the subscription link stays as the fallback.
+        bindLinkAvailable: needsBind && this.xboardGate.bindLink({ id: userId }) !== null,
         groupName: group?.title || '群组',
         userFirstName: user?.firstName || '',
         userLastName: user?.lastName || '',
@@ -467,6 +495,55 @@ export class MiniAppController {
         siteKey: this.turnstileService.getSiteKey(),
         hcaptchaSiteKey: this.hcaptchaService.getSiteKey() || '',
       });
+    });
+
+    // ── Verification, gated groups: one-click binding on the panel ──
+    //
+    // bind-link signs a short-lived ticket naming this Telegram account and
+    // returns the panel page that binds it; the page then polls gate-status
+    // until the panel reports the binding and submits on its own.
+    const gatedSession = async (body: unknown) => {
+      const parsed = z.object({ initData: z.string().min(1), sessionId: z.string().min(1) }).safeParse(body);
+      if (!parsed.success) return { ok: false, code: 400, error: 'Invalid request' } as const;
+      const userId = this.validateInitData(parsed.data.initData);
+      if (!userId) return { ok: false, code: 401, error: 'Unauthorized' } as const;
+      const session = await this.verificationService.getSession(parsed.data.sessionId);
+      if (!session || session.userId !== userId || session.status !== 'pending' || new Date() > session.expiresAt) {
+        return { ok: false, code: 404, error: 'session_not_found' } as const;
+      }
+      const settings = await this.groupService.getSettings(session.groupId).catch(() => null);
+      if (!this.xboardGate.isEnabledFor(settings)) return { ok: false, code: 404, error: 'gate_off' } as const;
+      return { ok: true, userId } as const;
+    };
+
+    fastify.post('/api/miniapp/verify/bind-link', {
+      preHandler: async (request, reply) => {
+        if (!(await this.rateLimiter.verifyPageLimit(request, reply))) return reply;
+      },
+    }, async (request, reply) => {
+      const ctx = await gatedSession(request.body);
+      if (!ctx.ok) return reply.code(ctx.code).send({ error: ctx.error });
+
+      const user = await this.userService.findById(ctx.userId).catch(() => null);
+      const url = this.xboardGate.bindLink({
+        id: ctx.userId,
+        firstName: user?.firstName,
+        lastName: user?.lastName,
+        username: user?.username,
+      });
+      if (!url) return reply.code(404).send({ error: 'unavailable' });
+      return reply.send({ url });
+    });
+
+    fastify.post('/api/miniapp/verify/gate-status', {
+      preHandler: async (request, reply) => {
+        if (!(await this.rateLimiter.gateStatusLimit(request, reply))) return reply;
+      },
+    }, async (request, reply) => {
+      const ctx = await gatedSession(request.body);
+      if (!ctx.ok) return reply.code(ctx.code).send({ error: ctx.error });
+      const status = await this.xboardGate.check(ctx.userId, { fresh: true });
+      return reply.send({ bound: status === 'member', banned: status === 'banned' });
     });
 
     // ── Verification: submit ──
@@ -480,6 +557,7 @@ export class MiniAppController {
         sessionId: z.string().min(1),
         turnstileToken: z.string().optional(),
         hcaptchaToken: z.string().optional(),
+        subscribeUrl: z.string().max(2048).optional(),
       }).safeParse(request.body);
       if (!parsed.success) return reply.code(400).send({ error: 'Invalid request' });
 
@@ -487,11 +565,7 @@ export class MiniAppController {
       if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
 
       const remoteIp = request.ip;
-      const { sessionId, turnstileToken, hcaptchaToken } = parsed.data;
-
-      if (!turnstileToken && !hcaptchaToken) {
-        return reply.code(400).send({ success: false, message: '请完成人机交互验证' });
-      }
+      const { sessionId, turnstileToken, hcaptchaToken, subscribeUrl } = parsed.data;
 
       this.logger.info('Mini App verification request', { userId, sessionId, ip: remoteIp });
 
@@ -511,70 +585,98 @@ export class MiniAppController {
         return reply.code(400).send({ success: false, message: '验证已过期，请返回群组重新获取' });
       }
 
-      // Check attempts
-      if (session.attemptCount >= 5) {
-        await this.auditService.log({
-          groupId: session.groupId,
-          userId: session.userId,
-          action: 'user_failed_verification',
-          details: 'Too many attempts (Mini App)',
-          ip: remoteIp,
-        });
-        return reply.code(429).send({ success: false, message: '尝试次数过多，请稍后再试' });
+      // Groups behind the Xboard gate replace the captcha with the panel
+      // account itself: a working subscription link is proof of a real
+      // panel user, which no captcha farm can supply. Elsewhere the captcha
+      // stands as before.
+      let gateSettings;
+      try {
+        gateSettings = await this.groupService.getSettings(session.groupId);
+      } catch (error) {
+        // Unreadable settings must not quietly switch the gate off.
+        this.logger.error('Could not read group settings for the Xboard gate', error);
+        return reply.code(503).send({ success: false, message: '验证服务暂时不可用，请稍后重试' });
       }
 
-      // Verify provider. Attempts are charged *after* the provider answers, and
-      // only for a genuine rejection: counting one up front meant every
-      // infrastructure failure — whose own message asks the user to retry —
-      // walked the user into the too-many-attempts branch above.
-      let assessment: CaptchaAssessment;
-      let providerLabel: string;
-      let providerErrors: string[] | undefined;
-
-      if (hcaptchaToken) {
-        const hcResult = await this.hcaptchaService.verify(hcaptchaToken, remoteIp);
-        providerErrors = hcResult['error-codes'];
-        providerLabel = 'hCaptcha';
-        assessment = await assessCaptchaResult({
-          provider: 'hcaptcha',
-          result: hcResult,
-          token: hcaptchaToken,
-          sessionId: session.id,
-          // Our Mini App widget code always binds the session id where the
-          // provider supports it; hCaptcha has no cData equivalent.
-          requireCdata: true,
-        });
+      if (this.xboardGate.isEnabledFor(gateSettings)) {
+        // Never charges an attempt: a mistyped link says nothing about the
+        // person, and the per-IP limiter already bounds retries.
+        const gate = await this.xboardGate.resolveAtVerification(gateSettings, userId, subscribeUrl);
+        if (!gate.ok) {
+          this.logger.info('Mini App verification held by the Xboard gate', { userId, sessionId, message: gate.message });
+          return reply.code(gate.httpStatus).send({ success: false, message: gate.message, needsBind: gate.needsBind });
+        }
       } else {
-        const turnstileResult = await this.turnstileService.verify(turnstileToken as string, remoteIp);
-        providerErrors = turnstileResult['error-codes'];
-        providerLabel = 'CF';
-        assessment = await assessCaptchaResult({
-          provider: 'turnstile',
-          result: turnstileResult,
-          token: turnstileToken as string,
-          sessionId: session.id,
-          requireCdata: true,
-        });
-      }
-
-      if (!assessment.ok) {
-        if (assessment.kind === 'infrastructure') {
-          // Undecidable, not failed: no attempt is charged and no verdict is
-          // implied about the user.
-          this.logger.error('Mini App captcha could not be assessed', {
-            userId, sessionId, reason: assessment.reason,
-          });
-          return reply.code(503).send({ success: false, message: '验证服务暂时不可用，请稍后重试' });
+        if (!turnstileToken && !hcaptchaToken) {
+          return reply.code(400).send({ success: false, message: '请完成人机交互验证' });
         }
 
-        await this.verificationService.incrementAttempts(session.id);
-        this.logger.warn('Mini App captcha verification failed', {
-          userId, sessionId,
-          provider: providerLabel,
-          reason: assessment.reason,
-          errors: providerErrors,
-        });
-        return reply.code(400).send({ success: false, message: `${providerLabel} 人机验证失败，请重试` });
+        // Check attempts
+        if (session.attemptCount >= 5) {
+          await this.auditService.log({
+            groupId: session.groupId,
+            userId: session.userId,
+            action: 'user_failed_verification',
+            details: 'Too many attempts (Mini App)',
+            ip: remoteIp,
+          });
+          return reply.code(429).send({ success: false, message: '尝试次数过多，请稍后再试' });
+        }
+
+        // Verify provider. Attempts are charged *after* the provider answers, and
+        // only for a genuine rejection: counting one up front meant every
+        // infrastructure failure — whose own message asks the user to retry —
+        // walked the user into the too-many-attempts branch above.
+        let assessment: CaptchaAssessment;
+        let providerLabel: string;
+        let providerErrors: string[] | undefined;
+
+        if (hcaptchaToken) {
+          const hcResult = await this.hcaptchaService.verify(hcaptchaToken, remoteIp);
+          providerErrors = hcResult['error-codes'];
+          providerLabel = 'hCaptcha';
+          assessment = await assessCaptchaResult({
+            provider: 'hcaptcha',
+            result: hcResult,
+            token: hcaptchaToken,
+            sessionId: session.id,
+            // Our Mini App widget code always binds the session id where the
+            // provider supports it; hCaptcha has no cData equivalent.
+            requireCdata: true,
+          });
+        } else {
+          const turnstileResult = await this.turnstileService.verify(turnstileToken as string, remoteIp);
+          providerErrors = turnstileResult['error-codes'];
+          providerLabel = 'CF';
+          assessment = await assessCaptchaResult({
+            provider: 'turnstile',
+            result: turnstileResult,
+            token: turnstileToken as string,
+            sessionId: session.id,
+            requireCdata: true,
+          });
+        }
+
+        if (!assessment.ok) {
+          if (assessment.kind === 'infrastructure') {
+            // Undecidable, not failed: no attempt is charged and no verdict is
+            // implied about the user.
+            this.logger.error('Mini App captcha could not be assessed', {
+              userId, sessionId, reason: assessment.reason,
+            });
+            return reply.code(503).send({ success: false, message: '验证服务暂时不可用，请稍后重试' });
+          }
+
+          await this.verificationService.incrementAttempts(session.id);
+          this.logger.warn('Mini App captcha verification failed', {
+            userId, sessionId,
+            provider: providerLabel,
+            reason: assessment.reason,
+            errors: providerErrors,
+          });
+          return reply.code(400).send({ success: false, message: `${providerLabel} 人机验证失败，请重试` });
+        }
+
       }
 
       // Single-flight the commit. Concurrent submits for one session would
