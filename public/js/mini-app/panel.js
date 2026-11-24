@@ -130,6 +130,11 @@ function renderAll() {
 function renderBasic() {
   var s = S.settings;
   setTog('t-verify', s.verificationEnabled);
+  var xbRow = document.getElementById('row-xbgate');
+  if (xbRow) {
+    xbRow.style.display = s.xboardGateAvailable ? '' : 'none';
+    setTog('t-xbgate', !!s.xboardGate);
+  }
   document.getElementById('btn-ttl').textContent = s.ttlMinutes + ' 分钟';
   document.getElementById('btn-auto-action').textContent =
     s.autoAction === 'mute' ? '🔇 禁言' : '👢 踢出';
@@ -146,6 +151,11 @@ function cycleAutoAction() {
   S.settings.autoAction = S.settings.autoAction === 'mute' ? 'kick' : 'mute';
   renderBasic();
   scheduleSave({ autoAction: S.settings.autoAction });
+}
+function togXboardGate() {
+  S.settings.xboardGate = !S.settings.xboardGate;
+  renderBasic();
+  scheduleSave({ xboardGate: S.settings.xboardGate });
 }
 function togVerify() {
   S.settings.verificationEnabled = !S.settings.verificationEnabled;

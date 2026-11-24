@@ -9,6 +9,7 @@ import { VerificationService } from '../services/VerificationService';
 import { TurnstileService } from '../services/TurnstileService';
 import { HCaptchaService } from '../services/HCaptchaService';
 import { AuditService } from '../services/AuditService';
+import { XboardGateService } from '../services/XboardGateService';
 import { Logger } from '../utils/logger';
 import { config } from '../config/config';
 import { TelegramBot } from '../services/TelegramBot';
@@ -81,6 +82,7 @@ const UpdateSettingsBody = z.object({
     verificationEnabled: z.boolean().optional(),
     ttlMinutes: z.number().int().min(1).max(60).optional(),
     autoAction: z.enum(['mute', 'kick']).optional(),
+    xboardGate: z.boolean().optional(),
     filter: FilterUpdateSchema,
     customTitles: z.array(z.object({
       minLevel: z.number().int().min(1).max(100),
@@ -114,6 +116,7 @@ export class MiniAppController {
   private hcaptchaService: HCaptchaService;
   private auditService: AuditService;
   private rateLimiter: RateLimitMiddleware;
+  private xboardGate = new XboardGateService();
   private bot: TelegramBot;
   private logger: Logger;
 
@@ -190,6 +193,9 @@ export class MiniAppController {
         verificationEnabled: settings.verificationEnabled,
         ttlMinutes: settings.ttlMinutes,
         autoAction: settings.autoAction,
+        // Only offered when the deployment can reach a panel.
+        xboardGateAvailable: this.xboardGate.isConfigured(),
+        xboardGate: settings.customSettings?.xboardGate === true,
         filter: filterConfig,
         customTitles: customTitles || LevelService.getDefaultTitles(),
       });
@@ -233,6 +239,15 @@ export class MiniAppController {
           mergedFilter.flood = { ...existingFilter.flood, ...incoming.flood };
         }
         cs.filter = mergedFilter;
+        safeUpdates.customSettings = cs;
+      }
+
+      if (typeof updates.xboardGate === 'boolean') {
+        if (updates.xboardGate && !this.xboardGate.isConfigured()) {
+          return reply.code(400).send({ error: 'Xboard gate is not configured on this bot' });
+        }
+        const cs = safeUpdates.customSettings || settings.customSettings || {};
+        cs.xboardGate = updates.xboardGate;
         safeUpdates.customSettings = cs;
       }
 

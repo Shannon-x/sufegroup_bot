@@ -98,6 +98,17 @@ const envSchema = z.object({
   // member's numeric Telegram id to api.cas.chat; set to false to opt out.
   CAS_ENABLED: z.enum(['true', 'false']).default('true'),
 
+  // Xboard panel gate: only registered, non-banned panel users may join groups
+  // that switch it on. The bot calls the panel's /api/v1/guest/telegram/gate/*
+  // endpoints; XBOARD_GATE_SECRET must equal the panel's
+  // TELEGRAM_GROUP_GATE_SECRET. Leaving either empty disables the feature.
+  XBOARD_GATE_API_URL: z.string().optional(),
+  XBOARD_GATE_SECRET: z.string().optional(),
+  // Optional: a link shown to applicants who still need to register or find
+  // their subscription link, and the name the panel goes by in messages.
+  XBOARD_PANEL_URL: z.string().optional(),
+  XBOARD_PANEL_NAME: z.string().optional(),
+
   // Logging
   LOG_LEVEL: z.enum(['error', 'warn', 'info', 'debug']).default('info'),
   LOG_FILE_PATH: z.string().default('./logs/bot.log'),
@@ -203,6 +214,12 @@ export const config = {
   },
   cas: {
     enabled: env.CAS_ENABLED === 'true',
+  },
+  xboardGate: {
+    apiUrl: (env.XBOARD_GATE_API_URL || '').trim().replace(/\/+$/, ''),
+    secret: (env.XBOARD_GATE_SECRET || '').trim(),
+    panelUrl: (env.XBOARD_PANEL_URL || '').trim(),
+    panelName: (env.XBOARD_PANEL_NAME || '').trim() || '面板',
   },
   logging: {
     level: env.LOG_LEVEL,

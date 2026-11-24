@@ -6,6 +6,7 @@ import { ContentFilterService } from '../services/ContentFilterService';
 import { LevelService } from '../services/LevelService';
 import { config } from '../config/config';
 import { escapeHtml } from '../utils/markdown';
+import { XboardGateService } from '../services/XboardGateService';
 
 /**
  * Admin panel with inline keyboard buttons.
@@ -16,6 +17,7 @@ export class AdminPanelCommand extends BaseCommand {
   description = '管理面板';
 
   private contentFilter: ContentFilterService;
+  private xboardGate = new XboardGateService();
 
   constructor(...args: ConstructorParameters<typeof BaseCommand>) {
     super(...args);
@@ -106,6 +108,7 @@ export class AdminPanelCommand extends BaseCommand {
       .text('🌊 刷屏设置', 'ap:menu_flood').row()
       .text('🏷 自定义称号', 'ap:menu_titles')
       .text('📊 群组统计', 'ap:show_stats').row();
+    this.addXboardGateButton(keyboard, settings);
 
     if (config.bot.webhookDomain) {
       keyboard.url('📱 Mini App（私聊打开）', `https://t.me/${config.bot.username}`);
@@ -127,6 +130,24 @@ export class AdminPanelCommand extends BaseCommand {
     if (action === 'toggle_verify') {
       await this.groupService.updateSettings(groupId, { verificationEnabled: !settings.verificationEnabled });
       await ctx.answerCallbackQuery({ text: `入群验证已${!settings.verificationEnabled ? '开启' : '关闭'}` });
+      await this.refreshMainMenu(ctx, groupId);
+      return;
+    }
+
+    if (action === 'toggle_xbgate') {
+      if (!this.xboardGate.isConfigured()) {
+        await ctx.answerCallbackQuery({ text: '机器人还没有配置面板接口（XBOARD_GATE_API_URL / XBOARD_GATE_SECRET）', show_alert: true });
+        return;
+      }
+      const cs = { ...(settings.customSettings || {}) };
+      cs.xboardGate = cs.xboardGate !== true;
+      await this.groupService.updateSettings(groupId, { customSettings: cs });
+      await ctx.answerCallbackQuery({
+        text: cs.xboardGate
+          ? '已开启「仅面板用户可入群」。请在群设置里打开「批准新成员」，入群申请会由我自动审核。'
+          : '已关闭「仅面板用户可入群」',
+        show_alert: cs.xboardGate,
+      });
       await this.refreshMainMenu(ctx, groupId);
       return;
     }
@@ -315,6 +336,13 @@ export class AdminPanelCommand extends BaseCommand {
     }
   }
 
+  /** Only offered when the deployment can actually reach a panel. */
+  private addXboardGateButton(keyboard: InlineKeyboard, settings: { customSettings?: Record<string, any> | null }) {
+    if (!this.xboardGate.isConfigured()) return;
+    const on = settings.customSettings?.xboardGate === true;
+    keyboard.text(`${on ? '✅' : '❌'} 仅面板用户可入群`, 'ap:toggle_xbgate').row();
+  }
+
   private async refreshMainMenu(ctx: any, groupId: string) {
     const settings = await this.groupService.getSettings(groupId);
     if (!settings) return;
@@ -332,6 +360,7 @@ export class AdminPanelCommand extends BaseCommand {
       .text('🌊 刷屏设置', 'ap:menu_flood').row()
       .text('🏷 自定义称号', 'ap:menu_titles')
       .text('📊 群组统计', 'ap:show_stats').row();
+    this.addXboardGateButton(keyboard, settings);
 
     if (config.bot.webhookDomain) {
       keyboard.url('📱 Mini App（私聊打开）', `https://t.me/${config.bot.username}`);

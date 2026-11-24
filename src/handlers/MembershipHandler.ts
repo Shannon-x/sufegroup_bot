@@ -14,6 +14,8 @@ import { escapeHtml } from '../utils/markdown';
 import { redisService } from '../services/RedisService';
 import { renderWelcomeTemplate } from '../utils/welcomeTemplate';
 import { CasService } from '../services/CasService';
+import { XboardGateService } from '../services/XboardGateService';
+import { XboardGateHandler } from './XboardGateHandler';
 
 export class MembershipHandler {
   private logger: Logger;
@@ -27,7 +29,8 @@ export class MembershipHandler {
     private auditService: AuditService,
     private contentFilterService: ContentFilterService,
     private levelService: LevelService,
-    private casService: CasService = new CasService()
+    private casService: CasService = new CasService(),
+    private xboardGate: XboardGateService = new XboardGateService()
   ) {
     this.logger = new Logger('MembershipHandler');
   }
@@ -247,6 +250,17 @@ export class MembershipHandler {
         return;
       }
 
+      // Xboard panel gate: only registered, non-banned panel users. Join
+      // requests are decided in XboardGateHandler; this catches everyone who
+      // got in another way (an old invite link without approval, a public
+      // username link while "approve new members" is off).
+      let gateVerified = false;
+      if (this.xboardGate.isEnabledFor(settings)) {
+        const verdict = await this.applyXboardGate(ctx, user, group, addedBy);
+        if (verdict === 'removed') return;
+        gateVerified = verdict === 'member';
+      }
+
       if (!settings.verificationEnabled) {
         this.logger.debug(`Verification disabled for group ${group.id}`);
         await this.recordJoinBookkeeping(user, group);
@@ -270,6 +284,13 @@ export class MembershipHandler {
           this.logger.error('Failed to ban blacklisted user', { userId: user.id, reason });
           await this.handleRestrictionFailure(ctx, user, group, `封禁黑名单用户失败: ${reason}`);
         }
+        return;
+      }
+
+      // A bound panel account is a stronger signal than any captcha.
+      if (gateVerified) {
+        this.logger.info('Xboard panel user joined, skipping captcha', { userId: user.id, groupId: group.id });
+        await this.recordJoinBookkeeping(user, group);
         return;
       }
 
@@ -528,6 +549,80 @@ export class MembershipHandler {
    * Ban a joining account that appears on the CAS blocklist. Returns whether
    * the ban took effect; on failure the caller continues with verification.
    */
+  /**
+   * Decide a join under the Xboard gate.
+   *
+   *   member  — a bound, non-banned panel user (or one we just approved).
+   *   skip    — not ours to judge: an admin let them in, or the panel could not
+   *             be asked. Normal verification proceeds; an outage never kicks.
+   *   removed — not a panel user, and now out of the group.
+   */
+  private async applyXboardGate(
+    ctx: MyContext,
+    user: { id: string; firstName: string; username?: string | null },
+    group: { id: string; title?: string },
+    addedBy?: { id: number }
+  ): Promise<'member' | 'skip' | 'removed'> {
+    if (await XboardGateHandler.wasApprovedByGate(group.id, user.id)) return 'member';
+
+    // Someone else let them in — an admin adding a member by hand, or
+    // approving a join request themselves. That is the admin's decision.
+    if (addedBy && addedBy.id !== Number(user.id) && addedBy.id !== ctx.me.id) {
+      const byAdmin = await ctx.api
+        .getChatMember(Number(group.id), addedBy.id)
+        .then((m) => m.status === 'administrator' || m.status === 'creator')
+        .catch(() => false);
+      if (byAdmin) return 'skip';
+    }
+
+    const status = await this.xboardGate.check(user.id);
+    if (status === 'member') return 'member';
+    if (status === null) {
+      this.logger.warn('Xboard gate unavailable, falling back to normal verification', {
+        userId: user.id,
+        groupId: group.id,
+      });
+      return 'skip';
+    }
+
+    try {
+      // A plain kick, not a ban: the way back in is a join request.
+      await ctx.api.banChatMember(Number(group.id), Number(user.id));
+      await ctx.api.unbanChatMember(Number(group.id), Number(user.id), { only_if_banned: true });
+    } catch (error) {
+      this.logger.error('Could not remove a non-panel user', {
+        userId: user.id,
+        groupId: group.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return 'skip';
+    }
+
+    this.logger.info('Removed a non-panel user on join', { userId: user.id, groupId: group.id, status });
+    await this.bestEffort('audit gate removal', () =>
+      this.auditService.log({
+        groupId: group.id,
+        userId: user.id,
+        action: 'user_kicked',
+        details: `Xboard gate: ${status === 'banned' ? 'panel account banned' : 'no panel account bound'}`,
+      })
+    );
+
+    const label = user.username ? `@${user.username}` : user.firstName;
+    const panel = config.xboardGate.panelName;
+    await this.bestEffort('announce gate removal', async () => {
+      const notice = await ctx.api.sendMessage(
+        Number(group.id),
+        `🔒 本群仅限${escapeHtml(panel)}用户，已移出 ${escapeHtml(label)}。请点群链接「申请加入」，按机器人提示绑定账号后即可自动入群。`,
+        { parse_mode: 'HTML' }
+      );
+      setTimeout(() => {
+        ctx.api.deleteMessage(Number(group.id), notice.message_id).catch(() => undefined);
+      }, 60_000).unref?.();
+    });
+    return 'removed';
+  }
+
   private async removeListedAccount(
     ctx: MyContext,
     user: { id: string; firstName: string; username?: string | null },
