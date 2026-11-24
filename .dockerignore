@@ -7,7 +7,7 @@ logs
 .env.*
 !.env.example
 *.md
-.eslintrc.js
+eslint.config.mjs
 .vscode
 .idea
 nginx
