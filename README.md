@@ -156,8 +156,9 @@ nano .env
 
 docker compose build
 docker compose up -d
-docker compose up -d
 ```
+
+> `docker-compose.yml` 只启动 bot，不带 PostgreSQL / Redis，并加入外部网络 `1panel-network`，适合数据库已由 1Panel 等面板托管的服务器。两份 Compose 文件的区别、启动时的自动迁移与排错见 [OPERATIONS.md](OPERATIONS.md)。
 
 ---
 
@@ -326,29 +327,7 @@ BOT_VERSION=1.2.0 docker compose -f docker-compose.prod.yml up -d
 
 ## 运维
 
-### 数据库备份
-
-```bash
-# 备份
-docker compose -f docker-compose.prod.yml exec postgres \
-  pg_dump -U telegram_bot telegram_bot | gzip > backup_$(date +%Y%m%d).sql.gz
-
-# 恢复
-gunzip < backup_20240101.sql.gz | \
-  docker compose -f docker-compose.prod.yml exec -T postgres \
-  psql -U telegram_bot telegram_bot
-```
-
-### 日志与调试
-
-```bash
-# 实时日志
-docker compose -f docker-compose.prod.yml logs -f bot --tail=100
-
-# 开启 debug 日志（在 .env 中设置后重启）
-LOG_LEVEL=debug
-docker compose -f docker-compose.prod.yml restart bot
-```
+部署方式对比、启动与自动迁移、健康检查（`/live`、`/health`）、备份恢复、故障排查和 Token 泄露处理见 **[OPERATIONS.md](OPERATIONS.md)**；全部环境变量说明见 **[CONFIG.md](CONFIG.md)**。
 
 ---
 
