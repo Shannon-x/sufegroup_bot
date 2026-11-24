@@ -8,7 +8,7 @@
 
 按顺序确认：
 
-1. **本机器人已经跑起来**。先按 [../BOT_SETUP_GUIDE.md](../BOT_SETUP_GUIDE.md) 或 [../DOCKER_DEPLOY.md](../DOCKER_DEPLOY.md) 把本项目部署完，能正常处理群组验证、Mini App 能打开，再来配 Chatwoot 网关。
+1. **本机器人已经跑起来**。先按 [../README.md](../README.md#快速部署) 和 [../OPERATIONS.md](../OPERATIONS.md) 把本项目部署完，能正常处理群组验证、Mini App 能打开，再来配 Chatwoot 网关。
 2. **HTTPS 域名**。`BOT_WEBHOOK_DOMAIN` 必须是公网可达的 HTTPS 域名（Telegram 不接受自签或 HTTP）。
 3. **可用的 Chatwoot 实例**。能正常创建 Telegram Inbox。
 4. **两个独立的 Telegram bot**（详见下面"两个机器人"小节）：客服机器人 + 验证机器人。

@@ -20,21 +20,22 @@
 - **要求**: 至少 16 位，包含大小写字母、数字和特殊字符
 - **示例**: `Str0ng!P@ssw0rd#2024`
 
-### TURNSTILE_SITE_KEY 和 TURNSTILE_SECRET_KEY
+### TURNSTILE_SITE_KEY 和 TURNSTILE_SECRET_KEY（以及可选的 HCAPTCHA_SITE_KEY / HCAPTCHA_SECRET_KEY）
 - **说明**: Cloudflare Turnstile 验证服务密钥
 - **获取方式**:
   1. 访问 https://dash.cloudflare.com/
   2. 进入 Turnstile 页面
   3. 创建新站点
   4. 获取 Site Key 和 Secret Key
+- **hCaptcha**: 可选，为电脑端用户提供备用验证，在 https://dashboard.hcaptcha.com/ 获取
 
 ### JWT_SECRET
 - **说明**: JWT 令牌签名密钥
-- **要求**: 至少 32 位随机字符串
+- **要求**: 生产环境至少 32 个字符，否则拒绝启动
 - **生成**: `openssl rand -hex 32`
 
 ### HMAC_SECRET
-- **说明**: HMAC 签名密钥，用于验证链接
+- **说明**: HMAC 签名密钥，用于验证链接。可选：不设置时回落到 `JWT_SECRET`，启动日志会给出警告，生产环境建议独立设置
 - **要求**: 至少 32 位随机字符串
 - **生成**: `openssl rand -hex 32`
 
@@ -47,23 +48,36 @@
 - **可选值**: `development`, `production`, `test`
 - **说明**: 运行环境，影响日志级别和错误处理
 
-#### PORT
-- **默认值**: `3000`
-- **说明**: Web 服务器端口
+#### SERVER_PORT（或 PORT）
+- **默认值**: `8080`
+- **说明**: Web 服务器端口。两者都设置时以 `SERVER_PORT` 为准。Compose 文件和 Dockerfile 都按 `8080` 写死，改了要同步改端口映射和 healthcheck
 
-#### HOST
+#### SERVER_HOST（或 HOST）
 - **默认值**: `0.0.0.0`
 - **说明**: 监听地址，`0.0.0.0` 表示所有网络接口
+
+#### TRUST_PROXY
+- **默认值**: `loopback,uniquelocal`
+- **可选值**: `true`、`false`、地址 / CIDR / 命名范围，或它们的逗号分隔列表（不支持跳数）
+- **说明**: 哪些上游代理可以提供 `X-Forwarded-For`。Webhook 的 Telegram IP 白名单依赖它：默认值覆盖 Docker 网桥地址 `172.x.x.1`，适配宿主机 Nginx + 容器的部署。设为 `false` 时所有 Webhook 都会被当成来自网桥而被拒，机器人收不到任何消息。只有在没有任何反向代理、直接暴露时才设为 `false`
+
+### 机器人身份
+
+#### BOT_USERNAME
+- **说明**: 机器人用户名，不带 `@`。验证按钮的 deep link 用它生成，必须与 `getMe` 返回的 `username` 一致，填错会让用户跳到别的账号
+
+#### BOT_MINIAPP_SHORT_NAME
+- **说明**: 在 @BotFather 用 `/newapp` 创建 Mini App 时设置的 Short Name。不设置时入群验证回落到私聊里的浏览器验证；Chatwoot 网关必须设置
 
 ### Webhook 配置（可选）
 
 #### BOT_WEBHOOK_DOMAIN
 - **示例**: `https://bot.example.com`
-- **说明**: 如果设置，将使用 webhook 模式而非轮询
+- **说明**: 如果设置，将使用 webhook 模式而非轮询，端点为 `<域名>/telegram-webhook`
 
 #### BOT_WEBHOOK_SECRET
-- **说明**: Webhook 验证密钥，建议设置以增强安全性
-- **生成**: `openssl rand -hex 16`
+- **说明**: Webhook 验证密钥。`NODE_ENV=production` 且设置了 `BOT_WEBHOOK_DOMAIN` 时为必填，缺失会拒绝启动
+- **生成**: `openssl rand -hex 32`
 
 ### 数据库配置
 
@@ -77,7 +91,7 @@
 
 #### DB_USERNAME
 - **默认值**: `postgres`
-- **说明**: 数据库用户名
+- **说明**: 数据库用户名。使用 `docker-compose.prod.yml` 自带的 PostgreSQL 时填 `telegram_bot`
 
 #### DB_DATABASE
 - **默认值**: `telegram_bot`
@@ -115,6 +129,10 @@
 - **说明**: 超时操作为 `kick` 时，用户被移出后多久可以重新入群。`0` 表示立即解除封禁并允许重新验证；正数会按 Telegram 规则自动提高到至少 35 秒
 - **建议**: 默认保持 `60` 秒以阻断自动账号立即重入；更重视无等待恢复时可设为 `0`，攻击频繁时可提高到 `300`
 
+#### CAS_ENABLED
+- **默认值**: `true`
+- **说明**: 入群时查询 [CAS](https://cas.chat) 反垃圾黑名单，已收录的广告账号直接封禁。会把入群成员的 Telegram 数字 ID 发送到 `api.cas.chat`；查询失败按「未收录」处理。设为 `false` 关闭
+
 #### DEFAULT_RATE_LIMIT_WINDOW_MS
 - **默认值**: `60000`（1分钟）
 - **说明**: 速率限制时间窗口（毫秒）
@@ -139,20 +157,23 @@
 ```env
 # 基础配置
 NODE_ENV=production
-PORT=3000
-HOST=0.0.0.0
+SERVER_PORT=8080
+SERVER_HOST=0.0.0.0
+TRUST_PROXY=loopback,uniquelocal
 
 # Telegram Bot
 BOT_TOKEN=your_production_bot_token
+BOT_USERNAME=your_bot_username
+BOT_MINIAPP_SHORT_NAME=app
 BOT_WEBHOOK_DOMAIN=https://your-domain.com
 BOT_WEBHOOK_SECRET=generate_a_strong_secret
 
-# 数据库（使用 Docker 内部网络）
+# 数据库（docker-compose.prod.yml 自带的 PostgreSQL）
 DB_HOST=postgres
 DB_PORT=5432
-DB_USERNAME=botuser
+DB_USERNAME=telegram_bot
 DB_PASSWORD=very_strong_password_here
-DB_DATABASE=telegram_bot_prod
+DB_DATABASE=telegram_bot
 
 # Redis（使用 Docker 内部网络）
 REDIS_HOST=redis
@@ -170,6 +191,7 @@ HMAC_SECRET=your_64_char_hmac_secret_here
 # 机器人配置
 DEFAULT_VERIFY_TTL_MINUTES=10
 DEFAULT_AUTO_ACTION=kick
+CAS_ENABLED=true
 DEFAULT_RATE_LIMIT_WINDOW_MS=60000
 DEFAULT_RATE_LIMIT_MAX_REQUESTS=5
 
@@ -195,4 +217,6 @@ LOG_FILE_PATH=/app/logs/bot.log
 2. 验证 Bot Token 格式是否正确
 3. 确认数据库连接信息
 4. 查看启动日志中的错误信息
-5. 使用 `docker-compose config` 验证配置
+5. 使用 `docker compose config` 验证配置
+
+更多排查步骤见 [OPERATIONS.md](OPERATIONS.md#故障排查)。

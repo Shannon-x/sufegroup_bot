@@ -1,384 +1,214 @@
-# 运维手册 - Telegram 群组管理机器人
+# 运维手册
+
+本文档面向部署和维护机器人的人。功能介绍、命令列表、发版流程见 [README.md](README.md)，全部环境变量见 [CONFIG.md](CONFIG.md)，Chatwoot 网关见 [docs/CHATWOOT_TELEGRAM_GATEWAY_GUIDE.md](docs/CHATWOOT_TELEGRAM_GATEWAY_GUIDE.md)。
 
 ## 目录
 
 1. [系统架构](#系统架构)
-2. [部署流程](#部署流程)
-3. [日常运维](#日常运维)
-4. [监控告警](#监控告警)
-5. [故障处理](#故障处理)
-6. [性能调优](#性能调优)
-7. [安全加固](#安全加固)
-8. [备份恢复](#备份恢复)
+2. [部署方式](#部署方式)
+3. [Telegram 侧配置](#telegram-侧配置)
+4. [启动流程与数据库迁移](#启动流程与数据库迁移)
+5. [健康检查](#健康检查)
+6. [日常运维](#日常运维)
+7. [备份与恢复](#备份与恢复)
+8. [故障排查](#故障排查)
+9. [安全](#安全)
 
 ## 系统架构
 
-### 技术栈
-- **后端**: Node.js + TypeScript + Fastify
-- **机器人框架**: grammY
-- **数据库**: PostgreSQL 16
-- **缓存**: Redis 7
-- **容器化**: Docker + Docker Compose
-- **反向代理**: Nginx
-- **SSL**: Let's Encrypt
-
-### 服务架构
 ```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   Telegram  │────▶│    Nginx    │────▶│   Bot App   │
-│   Servers   │     │  (Reverse)  │     │  (Fastify)  │
-└─────────────┘     └─────────────┘     └─────────────┘
-                                               │
-                                    ┌──────────┴──────────┐
-                                    ▼                     ▼
-                            ┌─────────────┐      ┌─────────────┐
-                            │ PostgreSQL  │      │    Redis    │
-                            │ (Database)  │      │   (Cache)   │
-                            └─────────────┘      └─────────────┘
+Telegram ──HTTPS──▶ Nginx（宿主机）──▶ bot 容器 :8080（Fastify + grammY）
+                                           │
+                                 ┌─────────┴─────────┐
+                                 ▼                   ▼
+                           PostgreSQL 16          Redis 7
 ```
 
-## 部署流程
+- bot 容器内监听 `8080`（`SERVER_PORT` / `PORT` 可改，默认 `8080`）。
+- 设置了 `BOT_WEBHOOK_DOMAIN` 时走 Webhook 模式，端点是 `POST /telegram-webhook`；不设置则走长轮询，此时不需要公网 HTTPS，但 Mini App 和网页验证仍需要一个 HTTPS 域名。
+- Webhook 请求会依次经过 Telegram IP 白名单、Secret Token 校验和限流。IP 白名单依赖 `X-Forwarded-For`，所以 Nginx 必须转发它，并且 `TRUST_PROXY` 要覆盖 Nginx 到容器的来源地址（见 [CONFIG.md](CONFIG.md#trust_proxy)）。
 
-### 首次部署
+## 部署方式
 
-1. **服务器准备**
-   ```bash
-   # 更新系统
-   sudo apt update && sudo apt upgrade -y
-   
-   # 安装 Docker
-   curl -fsSL https://get.docker.com | sh
-   sudo usermod -aG docker $USER
-   
-   # 安装 Docker Compose
-   sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-   sudo chmod +x /usr/local/bin/docker-compose
-   ```
+仓库里有两份 Compose 文件，用途不同：
 
-2. **域名配置**
-   - 将域名 A 记录指向服务器 IP
-   - 配置 Cloudflare（如使用）
+| 文件 | 镜像 | PostgreSQL / Redis | 端口映射 | 适用场景 |
+|------|------|------|------|------|
+| `docker-compose.prod.yml` | `ghcr.io/shannon-x/sufegroup_bot:${BOT_VERSION:-latest}` | 自带 `postgres` / `redis` 容器，数据在命名卷里 | `127.0.0.1:8080:8080` | 新服务器、推荐 |
+| `docker-compose.yml` | 本地 `build .` | 不自带，连外部已有实例 | `8082:8080` | 已经有 1Panel 等面板托管数据库的服务器 |
 
-3. **部署应用**
-   ```bash
-   # 克隆代码
-   git clone https://github.com/yourusername/telegram-group-bot.git
-   cd telegram-group-bot
-   
-   # 配置环境变量
-   cp .env.example .env
-   nano .env  # 编辑配置
-   
-   # 部署
-   ./deploy.sh
-   ```
-
-4. **SSL 证书配置**
-   ```bash
-   # 初始化 Certbot
-   docker-compose run --rm certbot certonly --webroot --webroot-path=/var/www/certbot -d your-domain.com
-   
-   # 更新 nginx 配置
-   nano nginx/conf.d/bot.conf  # 更新 server_name
-   docker-compose restart nginx
-   ```
-
-### 更新部署
+### 推荐：`docker-compose.prod.yml`
 
 ```bash
-# 拉取最新代码
-git pull origin main
+mkdir sufegroup-bot && cd sufegroup-bot
+curl -LO https://raw.githubusercontent.com/Shannon-x/sufegroup_bot/master/docker-compose.prod.yml
+curl -LO https://raw.githubusercontent.com/Shannon-x/sufegroup_bot/master/.env.example
+cp .env.example .env && nano .env
 
-# 备份数据库
-./backup.sh
+docker compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.prod.yml logs -f bot
+```
 
-# 重新构建和部署
-docker-compose build bot
-docker-compose up -d bot
+自带的 PostgreSQL 用户名和库名都是 `telegram_bot`，所以 `.env` 里保持 `DB_HOST=postgres`、`DB_USERNAME=telegram_bot`、`DB_DATABASE=telegram_bot`，`REDIS_HOST=redis`。
 
-# 运行新的数据库迁移（如有）
-docker-compose exec bot npm run migration:run
+宿主机 Nginx 反代到 `127.0.0.1:8080`，示例配置见 README「Nginx 反向代理」一节；`nginx/conf.d/bot.conf` 是给容器化 Nginx 用的另一份参考，`proxy_pass` 指向 `bot:8080`。
+
+### 已有数据库：`docker-compose.yml`
+
+这份文件只起 bot 一个容器，并加入外部网络 `1panel-network`（必须事先存在）。`.env` 里的 `DB_HOST` / `REDIS_HOST` 填面板里数据库容器的名字，用户名和库名按实际创建的填。宿主机访问端口是 `8082`。
+
+```bash
+git clone https://github.com/Shannon-x/sufegroup_bot.git
+cd sufegroup_bot
+cp .env.example .env && nano .env
+docker compose build
+docker compose up -d
+```
+
+`./deploy.sh` 是交互式向导，同样操作的是这份 `docker-compose.yml`。
+
+## Telegram 侧配置
+
+1. 在 [@BotFather](https://t.me/botfather) 创建机器人，拿到 `BOT_TOKEN`。
+2. `BOT_USERNAME` 必须和机器人真实用户名一致（不带 `@`）。验证按钮的 deep link 用的就是它，填错了用户点按钮会跳到别的账号。核对方法：
+   ```bash
+   curl "https://api.telegram.org/bot<BOT_TOKEN>/getMe"   # 看 result.username
+   ```
+3. 用 `/newapp` 创建 Mini App，URL 填 `https://<你的域名>/mini-app`，记下 Short Name 写入 `BOT_MINIAPP_SHORT_NAME`。不配置时入群验证回落到私聊里的浏览器验证；Chatwoot 网关则必须配置。
+4. 把机器人拉进群并设为**管理员**，至少给「删除消息」和「封禁/限制成员」权限。机器人是管理员时能收到群里全部消息，不需要额外关闭 Group Privacy。
+
+## 启动流程与数据库迁移
+
+容器启动后 `src/main.ts` 按顺序做这些事，任何一步失败进程都会以退出码 1 结束，由 `restart: unless-stopped` 拉起重试：
+
+1. **校验环境变量。** 缺必填项（如 `BOT_TOKEN`、`DB_PASSWORD`、`TURNSTILE_*`、`JWT_SECRET`），或生产环境设了 `BOT_WEBHOOK_DOMAIN` 却没设 `BOT_WEBHOOK_SECRET`、`JWT_SECRET` 不足 32 位，会直接报 `Invalid environment configuration` 并列出问题项。
+2. **连接数据库。** 最多尝试 10 次，间隔指数退避（1s 起，上限 15s），用来吸收数据库比应用晚就绪的情况。10 次都失败才退出。
+3. **检查迁移文件。** 一个迁移都没发现时直接报错退出，避免在空库上假装启动成功。
+4. **执行迁移。** 自动运行所有未执行的迁移（`src/migrations/` 编译到 `dist/migrations/`），已执行的会被跳过。**迁移失败是致命错误，进程会退出**，不会带着残缺的表结构继续运行。
+5. 启动 HTTP 服务、注册 Webhook（如配置），最后启动机器人。
+
+所以「容器反复重启」时第一件事是看日志里最后一条 `error`：
+
+```bash
+docker compose -f docker-compose.prod.yml logs bot --tail=100
+```
+
+查看迁移执行情况：
+
+```bash
+docker compose -f docker-compose.prod.yml exec postgres \
+  psql -U telegram_bot -d telegram_bot -c "SELECT * FROM migrations ORDER BY id;"
+```
+
+需要在不启动机器人的情况下单独跑迁移（比如排查迁移报错），用一次性容器：
+
+```bash
+docker compose -f docker-compose.prod.yml run --rm bot npm run migration:run
+```
+
+## 健康检查
+
+| 端点 | 含义 | 返回 |
+|------|------|------|
+| `GET /live` | 存活：进程在、事件循环有响应，不检查依赖 | 总是 `200` |
+| `GET /health` | 就绪：数据库可查询、Redis 可 ping、没有待执行迁移、机器人已启动 | 全部满足 `200`，否则 `503`，`checks` 字段标明哪一项不通过 |
+
+Compose 的 `healthcheck` 用的是 `/health`。
+
+```bash
+curl -s http://127.0.0.1:8080/health   # prod compose
+curl -s http://127.0.0.1:8082/health   # docker-compose.yml
 ```
 
 ## 日常运维
 
-### 服务管理
+下面以 `docker-compose.prod.yml` 为例；用 `docker-compose.yml` 的去掉 `-f` 参数即可。
 
 ```bash
-# 查看服务状态
-docker-compose ps
+# 状态 / 日志
+docker compose -f docker-compose.prod.yml ps
+docker compose -f docker-compose.prod.yml logs -f bot --tail=100
 
-# 启动/停止服务
-docker-compose start [service]
-docker-compose stop [service]
-docker-compose restart [service]
+# 升级到最新镜像（先备份数据库）
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d
 
-# 查看日志
-docker-compose logs -f bot           # 实时查看bot日志
-docker-compose logs --tail=100 bot  # 查看最近100行
-docker-compose logs postgres         # 查看数据库日志
+# 固定或回退到某个版本
+BOT_VERSION=2.2.6 docker compose -f docker-compose.prod.yml up -d
+
+# 临时打开 debug 日志：.env 里设 LOG_LEVEL=debug，然后
+docker compose -f docker-compose.prod.yml up -d bot
 ```
 
-### 健康检查
+改了 `.env` 要用 `up -d` 重建容器，`restart` 不会重新读取 `env_file`。
+
+日志同时输出到容器标准输出和挂载的 `./logs/` 目录，可以用 cron 清理旧文件：
 
 ```bash
-# API健康检查
-curl http://localhost:3000/health
-
-# 容器健康状态
-docker-compose ps | grep healthy
-
-# 资源使用情况
-docker stats
+0 3 * * 0 find /path/to/sufegroup-bot/logs -name "*.log" -mtime +30 -delete
 ```
 
-### 定时任务
-
-使用 crontab 设置定时任务：
+## 备份与恢复
 
 ```bash
-# 编辑定时任务
-crontab -e
+# 备份
+docker compose -f docker-compose.prod.yml exec -T postgres \
+  pg_dump -U telegram_bot telegram_bot | gzip > backup_$(date +%Y%m%d).sql.gz
 
-# 每天凌晨2点备份
-0 2 * * * /path/to/telegram-group-bot/backup.sh >> /var/log/bot-backup.log 2>&1
-
-# 每周日凌晨3点清理日志
-0 3 * * 0 find /path/to/telegram-group-bot/logs -name "*.log" -mtime +30 -delete
+# 恢复（先停 bot，避免写入）
+docker compose -f docker-compose.prod.yml stop bot
+gunzip < backup_20260101.sql.gz | \
+  docker compose -f docker-compose.prod.yml exec -T postgres psql -U telegram_bot telegram_bot
+docker compose -f docker-compose.prod.yml start bot
 ```
 
-## 监控告警
+每天定时备份可以把第一条命令放进 crontab，并用 `rsync` 同步到另一台机器。
 
-### 基础监控
-
-1. **系统资源监控**
-   ```bash
-   # CPU和内存
-   htop
-   
-   # 磁盘空间
-   df -h
-   
-   # 网络连接
-   netstat -tulpn | grep -E '3000|5432|6379'
-   ```
-
-2. **应用监控**
-   ```bash
-   # 检查进程
-   docker-compose ps
-   
-   # 检查端口
-   sudo lsof -i :3000
-   ```
-
-### 告警配置
-
-创建监控脚本 `monitor.sh`：
+**彻底重置数据库**（会删除所有用户、验证记录和审计日志，仅用于测试环境）：
 
 ```bash
-#!/bin/bash
-
-# 检查服务健康状态
-if ! curl -f http://localhost:3000/health > /dev/null 2>&1; then
-    echo "Bot service is down!" | mail -s "Bot Alert" admin@example.com
-fi
-
-# 检查磁盘空间
-DISK_USAGE=$(df -h / | awk 'NR==2 {print $5}' | sed 's/%//')
-if [ $DISK_USAGE -gt 80 ]; then
-    echo "Disk usage is at ${DISK_USAGE}%" | mail -s "Disk Alert" admin@example.com
-fi
+docker compose -f docker-compose.prod.yml exec postgres \
+  psql -U telegram_bot -d telegram_bot -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+docker compose -f docker-compose.prod.yml restart bot   # 启动时会重新跑全部迁移
 ```
 
-## 故障处理
+## 故障排查
 
-### 常见问题
+**容器反复重启 / `/health` 返回 503**
+看日志最后的 `error`，对照[启动流程](#启动流程与数据库迁移)判断卡在哪一步；`/health` 的 `checks` 会指明是数据库、Redis、迁移还是机器人本身。
 
-1. **Bot 无响应**
-   ```bash
-   # 检查容器状态
-   docker-compose ps
-   
-   # 查看错误日志
-   docker-compose logs bot | grep ERROR
-   
-   # 重启服务
-   docker-compose restart bot
-   ```
-
-2. **数据库连接失败**
-   ```bash
-   # 检查PostgreSQL状态
-   docker-compose ps postgres
-   
-   # 查看数据库日志
-   docker-compose logs postgres
-   
-   # 测试连接
-   docker-compose exec postgres pg_isready -U postgres
-   ```
-
-3. **验证页面502错误**
-   ```bash
-   # 检查应用服务
-   docker-compose ps bot
-   
-   # 检查nginx错误日志
-   docker-compose logs nginx
-   
-   # 重启相关服务
-   docker-compose restart bot nginx
-   ```
-
-### 紧急恢复
-
+**机器人收不到任何消息（Webhook 模式）**
 ```bash
-# 1. 停止所有服务
-docker-compose down
-
-# 2. 恢复最近的备份
-./restore.sh backups/postgres/latest_backup.sql.gz
-
-# 3. 重启服务
-docker-compose up -d
-
-# 4. 检查服务状态
-docker-compose ps
+curl "https://api.telegram.org/bot<BOT_TOKEN>/getWebhookInfo"
+docker compose -f docker-compose.prod.yml logs bot | grep -E "non-Telegram IP|Invalid webhook"
 ```
+出现 `Request from non-Telegram IP` 且 IP 是 Docker 网桥地址（`172.x.x.1`），说明 `TRUST_PROXY` 没覆盖到 Nginx 的来源，或 Nginx 没转发 `X-Forwarded-For`。出现 `Invalid webhook secret token` 说明 `BOT_WEBHOOK_SECRET` 和注册 Webhook 时用的不一致。
 
-## 性能调优
+**点验证按钮跳到别的账号 / 私聊没反应**
+`BOT_USERNAME` 和真实用户名不一致，按 [Telegram 侧配置](#telegram-侧配置) 第 2 步核对，改完 `up -d` 重建容器。
 
-### PostgreSQL 优化
+**验证页面显示链接无效或已过期**
+验证会话默认 10 分钟过期（`DEFAULT_VERIFY_TTL_MINUTES`）。如果刚改过 `JWT_SECRET` / `HMAC_SECRET`，之前发出的链接都会失效，让用户重新入群或由管理员 `/reverify`。
 
-编辑 `docker-compose.prod.yml`，添加PostgreSQL配置：
+**人机验证一直失败**
+核对 `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY`，并确认 Turnstile 控制台里允许的域名包含你的验证域名。`docker compose logs bot | grep -i turnstile` 看具体错误。
 
-```yaml
-postgres:
-  command: >
-    postgres
-    -c shared_buffers=256MB
-    -c effective_cache_size=1GB
-    -c maintenance_work_mem=64MB
-    -c work_mem=4MB
-    -c max_connections=100
-```
+**验证成功但用户还是不能发言 / 广告删不掉**
+机器人缺管理员权限。在群设置里确认它有「删除消息」和「封禁/限制成员」。
 
-### Redis 优化
+**验证页面或 Mini App 打不开**
+检查 `BOT_WEBHOOK_DOMAIN` 是否带 `https://`、证书是否有效、Nginx 是否已反代到正确端口、防火墙是否开放 443。
 
-```yaml
-redis:
-  command: >
-    redis-server
-    --maxmemory 256mb
-    --maxmemory-policy allkeys-lru
-    --save 900 1
-    --save 300 10
-```
+## 安全
 
-### 应用优化
+- `.env` 不进版本库；`BOT_TOKEN`、各类密钥只放在 `.env`，不要写进文档或聊天记录。
+- 密钥用 `openssl rand -hex 32` 生成，`HMAC_SECRET` 建议独立设置（不设时回落到 `JWT_SECRET`，启动日志会警告）。
+- 宿主机只开放 22 / 80 / 443；bot 端口只绑定本地（prod compose 默认如此），PostgreSQL / Redis 不对外暴露。
+- 依赖更新：CI 会做依赖与密钥扫描，本地可以 `npm audit`。
 
-1. **并发配置**
-   - 调整 Node.js 进程数
-   - 优化数据库连接池
+**Bot Token 泄露时**：
 
-2. **缓存策略**
-   - 增加 Redis 缓存时间
-   - 实现查询结果缓存
-
-## 安全加固
-
-### 1. 系统安全
-
-```bash
-# 配置防火墙
-sudo ufw allow 22/tcp    # SSH
-sudo ufw allow 80/tcp    # HTTP
-sudo ufw allow 443/tcp   # HTTPS
-sudo ufw enable
-
-# 禁用root登录
-sudo nano /etc/ssh/sshd_config
-# 设置 PermitRootLogin no
-sudo systemctl restart sshd
-```
-
-### 2. Docker安全
-
-```bash
-# 限制容器资源
-docker-compose -f docker-compose.prod.yml up -d
-
-# 定期更新镜像
-docker-compose pull
-docker-compose up -d
-```
-
-### 3. 应用安全
-
-- 定期更新依赖：`npm audit fix`
-- 使用强密码和密钥
-- 启用所有安全中间件
-- 限制API访问频率
-
-## 备份恢复
-
-### 自动备份
-
-1. **本地备份**
-   ```bash
-   # 设置定时备份
-   0 2 * * * /path/to/backup.sh
-   ```
-
-2. **远程备份**
-   ```bash
-   # 同步到远程服务器
-   rsync -avz backups/ user@backup-server:/backups/telegram-bot/
-   ```
-
-### 恢复流程
-
-1. **计划内恢复**
-   ```bash
-   # 1. 通知用户维护
-   # 2. 停止bot服务
-   docker-compose stop bot
-   # 3. 恢复数据
-   ./restore.sh backups/postgres/backup_file.sql.gz
-   # 4. 启动服务
-   docker-compose start bot
-   ```
-
-2. **灾难恢复**
-   - 在新服务器部署
-   - 恢复最新备份
-   - 更新DNS记录
-   - 验证服务正常
-
-## 维护计划
-
-### 日常维护
-- 检查服务状态
-- 查看错误日志
-- 监控资源使用
-
-### 周维护
-- 备份验证
-- 安全更新检查
-- 性能分析
-
-### 月维护
-- 依赖更新
-- 日志清理
-- 容量规划
-
-## 联系方式
-
-- 技术支持：tech@example.com
-- 紧急联系：+86 xxx xxxx xxxx
-- 文档更新：https://github.com/yourusername/telegram-group-bot/wiki
-
----
-
-最后更新：2024-01-01
+1. 在 @BotFather 里 `/mybots` → 选机器人 → `API Token` → `Revoke current token`，拿到新 token。
+2. 更新 `.env` 里的 `BOT_TOKEN`，同时轮换 `BOT_WEBHOOK_SECRET`、`JWT_SECRET`、`HMAC_SECRET`。
+3. `docker compose -f docker-compose.prod.yml up -d` 重建容器。
+4. 用 `grep -E "non-Telegram IP|Invalid webhook"` 检查日志里的异常请求。
