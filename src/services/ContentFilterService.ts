@@ -161,6 +161,23 @@ const BOT_MENTION_REGEX = /@([A-Za-z][A-Za-z0-9_]{1,28}bot)\b/gi;
 // not type these; they paste them from a campaign script.
 const TRACKING_TOKEN_REGEX = /(?:^|[\s:：=])(?:campaign[_-]?\d+|(?=[a-z0-9_-]*\d)(?=[a-z0-9_-]*[a-z])[a-z0-9_-]{14,})(?=$|\s)/i;
 
+// A pasted bot "/start" deep-link payload followed by bot handles:
+//   /start 18 @ihrm7rbot
+//   @lnhgtx8pm2bot
+//   @gb781748ff6b3bot
+// Three accounts posted dozens of these a minute apart and every one scored
+// zero: the tracking payload sits *before* the mentions, where the check
+// after each mention never looks. The payload is required — "/start@somebot"
+// (no space, no payload) is how members address a command to a bot.
+const START_PAYLOAD_LURE_REGEX = /(?:^|\n)\s*\/start(?:@\w+)?\s+\S+[\s\S]*?@[A-Za-z][A-Za-z0-9_]{1,28}bot\b/i;
+
+// Several different bots and nothing else to say: a rotation list, so that
+// banning one bot does not break the funnel. Measured on what is left after
+// removing the mentions, commands and digits, so a sentence that happens to
+// name three bots ("@a_bot @b_bot @c_bot 哪个好用？") is not a list.
+const BOT_LIST_MIN_MENTIONS = 3;
+const BOT_LIST_MAX_PROSE = 4;
+
 // E.164 allows at most 15 digits; below 8 nothing is dialable either.
 const PHONE_MIN_DIGITS = 8;
 const PHONE_MAX_DIGITS = 15;
@@ -209,9 +226,18 @@ const SPAM_PATTERNS: Array<{ pattern: RegExp; weight: number; label: string }> =
   { pattern: /[加联]系?[QqＱ扣][QqＱ扣号][:：]?\s*\d+/i, weight: 30, label: '引流' },
   { pattern: /[私聊]我|咨询.*[客服详情]|详[聊询]|了解[更详]多/i, weight: 15, label: '推广' },
   // Channel promotion
-  { pattern: /[关注进加入].*[频道群组channel]|频道.*[推荐福利资源]/i, weight: 20, label: '频道推广' },
+  //
+  // Written as alternations, not character classes. The old form
+  // `[关注进加入].*[频道群组channel]` meant "any one of 关/注/进/加/入, then
+  // anywhere later any one of 频/道/群/组/c/h/a/n/e/l" — so "加州Verizon",
+  // "AI延迟", "进icu了" and "claude注册" all scored as channel promotion. In
+  // two months of logs it was the most common near-miss reason, on ordinary
+  // questions only. The words must now appear whole and close together.
+  { pattern: /(?:关注|进入?|加入?).{0,8}(?:频道|群组?|channel)|频道.{0,8}(?:推荐|福利|资源)/i, weight: 20, label: '频道推广' },
   // Medicine / health scam
-  { pattern: /[壮阳减肥丰胸].*[产品药丸胶囊]|祖传秘方|包治百病/i, weight: 30, label: '虚假广告' },
+  // Same character-class trap as above: `[壮阳减肥丰胸].*[产品药丸胶囊]` paired
+  // any single 阳/肥/胸 with any later 品/丸 ("太阳……产品").
+  { pattern: /(?:壮阳|减肥|丰胸).{0,12}(?:产品|药丸?|胶囊)|祖传秘方|包治百病/i, weight: 30, label: '虚假广告' },
   // Get-rich-quick recruitment. This vocabulary was a blind spot: an ad bot
   // posting a wall of buttons promising an income scored zero, because none of
   // the patterns above cover "no capital required" / "get rich" phrasing and
@@ -559,8 +585,9 @@ export class ContentFilterService {
   }
 
   /**
-   * Bot mentions in already-normalised text, and whether any of them is
-   * followed on the same line by a tracking payload.
+   * Bot mentions in already-normalised text, and whether they carry a
+   * tracking payload: a token after a mention on the same line, a "/start
+   * <payload>" pasted ahead of the mentions, or a bare list of several bots.
    */
   private findBotLures(
     normalized: string,
@@ -579,6 +606,18 @@ export class ContentFilterService {
       const lineEnd = normalized.indexOf('\n', start);
       const rest = normalized.slice(start, lineEnd === -1 ? undefined : lineEnd);
       if (TRACKING_TOKEN_REGEX.test(rest)) withTracking = true;
+    }
+
+    if (mentions.length > 0 && START_PAYLOAD_LURE_REGEX.test(normalized)) {
+      withTracking = true;
+    }
+
+    if (new Set(mentions).size >= BOT_LIST_MIN_MENTIONS) {
+      const prose = normalized
+        .replace(BOT_MENTION_REGEX, '')
+        .replace(/\/[A-Za-z_]+(?:@\w+)?/g, '')
+        .replace(/[\d\s\p{P}\p{S}]/gu, '');
+      if (prose.length <= BOT_LIST_MAX_PROSE) withTracking = true;
     }
 
     return { mentions, withTracking };
