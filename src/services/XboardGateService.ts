@@ -8,6 +8,10 @@ export type GateStatus = 'member' | 'banned' | 'unbound';
 /** Answer of the panel's bind endpoint. */
 export type BindStatus = GateStatus | 'bound' | 'invalid_link' | 'account_taken';
 
+export type GateVerificationOutcome =
+  | { ok: true }
+  | { ok: false; httpStatus: number; message: string; needsBind?: boolean };
+
 const CHECK_STATUSES: readonly string[] = ['member', 'banned', 'unbound'];
 const BIND_STATUSES: readonly string[] = [...CHECK_STATUSES, 'bound', 'invalid_link', 'account_taken'];
 
@@ -80,6 +84,74 @@ export class XboardGateService {
     if (status === 'bound' || status === 'member') await this.remember(id, 'member');
     else if (status === 'banned') await this.remember(id, 'banned');
     return status;
+  }
+
+  /**
+   * Whether the verification page must ask this member for a subscription
+   * link. Only a confirmed binding answers "no"; an unreachable panel still
+   * shows the field, and the submit endpoint makes the final call.
+   */
+  async requiresBinding(
+    settings: { customSettings?: Record<string, any> | null } | null | undefined,
+    telegramId: number | string
+  ): Promise<boolean> {
+    if (!this.isEnabledFor(settings)) return false;
+    return (await this.check(telegramId)) !== 'member';
+  }
+
+  /**
+   * The gate's half of a captcha submission, run after the captcha passed and
+   * before the member is unmuted. Binds the subscription link when one is
+   * needed. A failure here never charges a verification attempt — it says
+   * nothing about whether a human solved the challenge.
+   */
+  async resolveAtVerification(
+    settings: { customSettings?: Record<string, any> | null } | null | undefined,
+    telegramId: number | string,
+    subscribeUrl?: string | null
+  ): Promise<GateVerificationOutcome> {
+    if (!this.isEnabledFor(settings)) return { ok: true };
+    const panel = config.xboardGate.panelName;
+    const unreachable: GateVerificationOutcome = {
+      ok: false,
+      httpStatus: 503,
+      message: `暂时无法连接${panel}，请稍后重试`,
+    };
+
+    const current = await this.check(telegramId, { fresh: true });
+    if (current === 'member') return { ok: true };
+    if (current === 'banned') return { ok: false, httpStatus: 403, message: `你的${panel}账号已被停用，无法入群` };
+    if (current === null) return unreachable;
+
+    const url = subscribeUrl?.trim();
+    if (!url) {
+      return { ok: false, httpStatus: 400, needsBind: true, message: `本群仅限${panel}用户，请填写你的订阅链接` };
+    }
+
+    switch (await this.bind(telegramId, url)) {
+      case 'bound':
+      case 'member':
+        return { ok: true };
+      case 'banned':
+        return { ok: false, httpStatus: 403, message: `这个${panel}账号已被停用，无法入群` };
+      case 'account_taken':
+        return {
+          ok: false,
+          httpStatus: 409,
+          needsBind: true,
+          message: `这个${panel}账号已经绑定了另一个 Telegram 账号，请用那个账号入群，或联系客服换绑`,
+        };
+      case 'invalid_link':
+      case 'unbound':
+        return {
+          ok: false,
+          httpStatus: 400,
+          needsBind: true,
+          message: `没认出这个订阅链接，请到${panel}重新复制完整的订阅链接`,
+        };
+      default:
+        return unreachable;
+    }
   }
 
   private async remember(id: string, status: GateStatus): Promise<void> {

@@ -125,6 +125,39 @@ describe('XboardGateService', () => {
   });
 });
 
+describe('XboardGateService — verification page', () => {
+  const gated = { customSettings: { xboardGate: true } };
+
+  it('passes a bound member without a link', async () => {
+    mockPanel({ check: 'member' });
+    expect(await new XboardGateService().resolveAtVerification(gated, USER_ID)).toEqual({ ok: true });
+  });
+
+  it('asks an unbound member for the link, then binds it', async () => {
+    mockPanel({ check: 'unbound', bind: 'bound' });
+    const gate = new XboardGateService();
+    const missing = await gate.resolveAtVerification(gated, USER_ID);
+    expect(missing).toMatchObject({ ok: false, needsBind: true, httpStatus: 400 });
+    expect(await gate.resolveAtVerification(gated, USER_ID, 'https://x.test/s/' + 'a'.repeat(32))).toEqual({ ok: true });
+  });
+
+  it('rejects a bad link, a banned account and an outage without letting them through', async () => {
+    mockPanel({ check: 'unbound', bind: 'invalid_link' });
+    expect(await new XboardGateService().resolveAtVerification(gated, USER_ID, 'https://x.test/nope')).toMatchObject({ ok: false, needsBind: true });
+    mockPanel({ check: 'banned' });
+    expect(await new XboardGateService().resolveAtVerification(gated, USER_ID)).toMatchObject({ ok: false, httpStatus: 403 });
+    mockPanel({ check: new Error('down') });
+    expect(await new XboardGateService().resolveAtVerification(gated, USER_ID)).toMatchObject({ ok: false, httpStatus: 503 });
+  });
+
+  it('does nothing for groups without the gate', async () => {
+    const fetchMock = mockPanel({ check: 'unbound' });
+    expect(await new XboardGateService().resolveAtVerification({ customSettings: {} }, USER_ID)).toEqual({ ok: true });
+    expect(await new XboardGateService().requiresBinding({ customSettings: {} }, USER_ID)).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('XboardGateHandler — join requests', () => {
   it('approves a registered panel user straight away (paid or not)', async () => {
     mockPanel({ check: 'member' });
@@ -242,7 +275,7 @@ describe('XboardGateHandler — binding in private chat', () => {
 });
 
 describe('MembershipHandler — direct joins under the gate', () => {
-  function harness(addedBy?: { id: number }) {
+  function harness(overrides: Record<string, unknown> = {}, addedBy?: { id: number }) {
     const api = makeApi();
     const settings = {
       verificationEnabled: true,
@@ -251,6 +284,7 @@ describe('MembershipHandler — direct joins under the gate', () => {
       adminBypassVerification: false,
       deleteWelcomeMessage: false,
       customSettings: { xboardGate: true, casCheck: false },
+      ...overrides,
     };
     const userService = { findOrCreate: vi.fn().mockResolvedValue({ id: String(USER_ID), firstName: 'Alice' }) };
     const groupService = {
@@ -282,8 +316,27 @@ describe('MembershipHandler — direct joins under the gate', () => {
     };
   }
 
-  it('removes a non-panel user who walked in through a plain link', async () => {
+  it('mutes an unbound member and sends them to the verification page to bind', async () => {
     mockPanel({ check: 'unbound' });
+    const h = harness();
+    await h.run();
+    expect(h.api.banChatMember).not.toHaveBeenCalled();
+    expect(h.api.restrictChatMember).toHaveBeenCalled();
+    expect(h.verificationService.createSession).toHaveBeenCalled();
+    const welcome = h.api.sendMessage.mock.calls.find((c: any[]) => c[0] === GROUP_ID);
+    expect(welcome?.[1]).toContain('订阅链接');
+  });
+
+  it('still sends an unbound member through verification when the captcha is switched off', async () => {
+    mockPanel({ check: 'unbound' });
+    const h = harness({ verificationEnabled: false });
+    await h.run();
+    expect(h.api.restrictChatMember).toHaveBeenCalled();
+    expect(h.verificationService.createSession).toHaveBeenCalled();
+  });
+
+  it('removes a banned panel account on join', async () => {
+    mockPanel({ check: 'banned' });
     const h = harness();
     await h.run();
     expect(h.api.banChatMember).toHaveBeenCalledWith(GROUP_ID, USER_ID);
@@ -300,7 +353,7 @@ describe('MembershipHandler — direct joins under the gate', () => {
     expect(h.verificationService.createSession).not.toHaveBeenCalled();
   });
 
-  it('falls back to the captcha when the panel is unreachable', async () => {
+  it('falls back to the verification page when the panel is unreachable', async () => {
     mockPanel({ check: new Error('down') });
     const h = harness();
     await h.run();
@@ -311,7 +364,7 @@ describe('MembershipHandler — direct joins under the gate', () => {
 
   it('respects an admin adding a member by hand', async () => {
     const fetchMock = mockPanel({ check: 'unbound' });
-    const h = harness({ id: 9001 });
+    const h = harness({}, { id: 9001 });
     h.api.getChatMember.mockResolvedValue({ status: 'administrator' });
     await h.run();
     expect(fetchMock).not.toHaveBeenCalled();

@@ -13,6 +13,31 @@ var _vSessionId = null;
 var _vTotalSeconds = 0;
 var _vRemaining = 0;
 var _vMode = 'group';
+var _vNeedsBind = false;
+
+/** Xboard gate: show the subscription-link field when the server asks for it. */
+function showBindField(data) {
+  var box = document.getElementById('v-bind');
+  if (!box) return;
+  _vNeedsBind = !!data.needsBind;
+  box.style.display = _vNeedsBind ? 'block' : 'none';
+  if (!_vNeedsBind) return;
+  if (data.panelName) document.getElementById('v-panel-name').textContent = data.panelName;
+  var link = document.getElementById('v-panel-link');
+  if (data.panelUrl) {
+    link.href = data.panelUrl;
+    link.style.display = 'inline-block';
+    link.addEventListener('click', function(e) {
+      if (tg.openLink) { e.preventDefault(); tg.openLink(data.panelUrl); }
+    });
+  }
+  document.getElementById('v-sub').textContent = '请填写订阅链接并完成人机验证以加入群组';
+}
+
+/** A subscription link carries a 32-hex token, in ?token= or as the last path segment. */
+function looksLikeSubscribeUrl(url) {
+  return /^https?:\/\/\S+$/i.test(url) && /(?:[?&]token=|\/)[a-f0-9]{32}(?:[\/?&#]|$)/i.test(url);
+}
 
 function verificationEndpoints() {
   if (_vMode === 'chatwoot') {
@@ -63,6 +88,7 @@ async function initVerification(sessionId, mode) {
       ? '请完成人机验证，验证通过后客服系统才会接收您的消息'
       : '请完成人机验证以加入群组';
     document.getElementById('v-group-name').textContent = data.groupName;
+    if (_vMode === 'group') showBindField(data);
     var fullName = data.userFirstName + (data.userLastName ? ' ' + data.userLastName : '');
     // NFKC-normalise (folds 𝒦/fancy Unicode → K) then take the first code point
     // so surrogate pairs (fancy letters / emoji) aren't split into a broken glyph.
@@ -248,6 +274,15 @@ function updateVerifyTimer() {
 }
 
 async function submitVerification() {
+  var subscribeUrl = '';
+  if (_vNeedsBind) {
+    subscribeUrl = (document.getElementById('v-sub-url').value || '').trim();
+    // Checked before the captcha is spent: a solved token is single-use.
+    if (!looksLikeSubscribeUrl(subscribeUrl)) {
+      showVerifyMsg('error', '请粘贴完整的订阅链接（以 https:// 开头）');
+      return;
+    }
+  }
   if (!_vTurnstileToken && !_vHcaptchaToken) {
     showVerifyMsg('error', '请先完成人机验证');
     return;
@@ -268,7 +303,8 @@ async function submitVerification() {
         initData: initData,
         sessionId: _vSessionId,
         turnstileToken: _vTurnstileToken || undefined,
-        hcaptchaToken: _vHcaptchaToken || undefined
+        hcaptchaToken: _vHcaptchaToken || undefined,
+        subscribeUrl: subscribeUrl || undefined
       })
     });
     var data = await res.json();

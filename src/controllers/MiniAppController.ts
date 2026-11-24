@@ -472,7 +472,15 @@ export class MiniAppController {
       // back to the initial-letter avatar).
       const avatarUrl = await getUserAvatarDataUrl(this.bot.getBot().api, userId);
 
+      // Xboard gate: ask for the subscription link on the same page as the
+      // captcha when this member is not a confirmed panel user yet.
+      const groupSettings = await this.groupService.getSettings(session.groupId).catch(() => null);
+      const needsBind = await this.xboardGate.requiresBinding(groupSettings, userId);
+
       return reply.send({
+        needsBind,
+        panelName: needsBind ? config.xboardGate.panelName : undefined,
+        panelUrl: needsBind && /^https:\/\//i.test(config.xboardGate.panelUrl) ? config.xboardGate.panelUrl : undefined,
         groupName: group?.title || '群组',
         userFirstName: user?.firstName || '',
         userLastName: user?.lastName || '',
@@ -495,6 +503,7 @@ export class MiniAppController {
         sessionId: z.string().min(1),
         turnstileToken: z.string().optional(),
         hcaptchaToken: z.string().optional(),
+        subscribeUrl: z.string().max(2048).optional(),
       }).safeParse(request.body);
       if (!parsed.success) return reply.code(400).send({ error: 'Invalid request' });
 
@@ -502,7 +511,7 @@ export class MiniAppController {
       if (!userId) return reply.code(401).send({ error: 'Unauthorized' });
 
       const remoteIp = request.ip;
-      const { sessionId, turnstileToken, hcaptchaToken } = parsed.data;
+      const { sessionId, turnstileToken, hcaptchaToken, subscribeUrl } = parsed.data;
 
       if (!turnstileToken && !hcaptchaToken) {
         return reply.code(400).send({ success: false, message: '请完成人机交互验证' });
@@ -590,6 +599,22 @@ export class MiniAppController {
           errors: providerErrors,
         });
         return reply.code(400).send({ success: false, message: `${providerLabel} 人机验证失败，请重试` });
+      }
+
+      // Xboard gate, only once a human is proven: bind the subscription link
+      // if this member still needs one. Never charges an attempt.
+      let gateSettings;
+      try {
+        gateSettings = await this.groupService.getSettings(session.groupId);
+      } catch (error) {
+        // Unreadable settings must not quietly switch the gate off.
+        this.logger.error('Could not read group settings for the Xboard gate', error);
+        return reply.code(503).send({ success: false, message: '验证服务暂时不可用，请稍后重试' });
+      }
+      const gate = await this.xboardGate.resolveAtVerification(gateSettings, userId, subscribeUrl);
+      if (!gate.ok) {
+        this.logger.info('Mini App verification held by the Xboard gate', { userId, sessionId, message: gate.message });
+        return reply.code(gate.httpStatus).send({ success: false, message: gate.message, needsBind: gate.needsBind });
       }
 
       // Single-flight the commit. Concurrent submits for one session would

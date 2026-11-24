@@ -52,6 +52,19 @@
                     <form id="verifyForm">
                         <input type="hidden" name="token" value="<%= token %>">
 
+                        <% if (typeof needsBind !== 'undefined' && needsBind) { %>
+                        <!-- Xboard gate: bind the panel account alongside the captcha -->
+                        <div class="bind-section" id="bindSection">
+                            <div class="bind-title">🔒 本群仅限<%= panelName %>用户</div>
+                            <div class="bind-sub">粘贴你的订阅链接，完成验证时会一并绑定账号。免费账号也可以。</div>
+                            <input class="bind-input" id="subscribeUrl" name="subscribeUrl" type="url" inputmode="url"
+                                   autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://…（订阅链接）">
+                            <% if (panelUrl) { %>
+                            <a class="bind-link" href="<%= panelUrl %>" target="_blank" rel="noopener">还没有账号 / 找不到订阅链接？打开<%= panelName %> ↗</a>
+                            <% } %>
+                        </div>
+                        <% } %>
+
                         <div class="captcha-wrapper">
                             <div class="cf-turnstile"
                                  data-sitekey="<%= siteKey %>"

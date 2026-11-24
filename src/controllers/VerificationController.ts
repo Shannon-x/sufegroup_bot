@@ -14,6 +14,7 @@ import { escapeHtml } from '../utils/markdown';
 import { avatarInitial } from '../utils/avatar';
 import { getUserAvatarDataUrl } from '../utils/avatarPhoto';
 import { assessCaptchaResult } from './captchaGuard';
+import { XboardGateService } from '../services/XboardGateService';
 import {
   acquireCommitLock,
   handleFailedCommit,
@@ -29,12 +30,15 @@ interface VerifyQuerystring {
 interface VerifyBody {
   token: string;
   turnstileToken: string;
+  /** Xboard gate: the member's subscription link, when they still need to bind. */
+  subscribeUrl?: string;
 }
 
 export class VerificationController {
   private verificationService: VerificationService;
   private userService: UserService;
   private groupService: GroupService;
+  private xboardGate = new XboardGateService();
   private auditService: AuditService;
   private turnstileService: TurnstileService;
   private rateLimiter: RateLimitMiddleware;
@@ -123,7 +127,13 @@ export class VerificationController {
 
         const avatarUrl = await getUserAvatarDataUrl(this.bot.getBot().api, user.id);
 
+        const groupSettings = await this.groupService.getSettings(tokenData.groupId).catch(() => null);
+        const needsBind = await this.xboardGate.requiresBinding(groupSettings, tokenData.userId);
+
         return reply.view('verify', {
+          needsBind,
+          panelName: config.xboardGate.panelName,
+          panelUrl: /^https:\/\//i.test(config.xboardGate.panelUrl) ? config.xboardGate.panelUrl : '',
           token,
           siteKey: this.turnstileService.getSiteKey(),
           // Binds the solved token to this session. Turnstile echoes cData back
@@ -155,6 +165,8 @@ export class VerificationController {
       },
       async (request, reply) => {
         const { token, turnstileToken } = request.body;
+        const subscribeUrl =
+          typeof request.body.subscribeUrl === 'string' ? request.body.subscribeUrl.slice(0, 2048) : undefined;
         const remoteIp = request.ip;
 
         this.logger.info('Verification request received', {
@@ -276,6 +288,19 @@ export class VerificationController {
             success: false,
             message: '人机验证失败，请重试'
           });
+        }
+
+        // Xboard gate, only once a human is proven. Never charges an attempt.
+        let gateSettings;
+        try {
+          gateSettings = await this.groupService.getSettings(session.groupId);
+        } catch (error) {
+          this.logger.error('Could not read group settings for the Xboard gate', error);
+          return reply.code(503).send({ success: false, message: '验证服务暂时不可用，请稍后重试' });
+        }
+        const gate = await this.xboardGate.resolveAtVerification(gateSettings, session.userId, subscribeUrl);
+        if (!gate.ok) {
+          return reply.code(gate.httpStatus).send({ success: false, message: gate.message, needsBind: gate.needsBind });
         }
 
         // Single-flight the commit. Concurrent submits for one session would

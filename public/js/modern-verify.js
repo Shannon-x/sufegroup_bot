@@ -87,6 +87,15 @@
   form.addEventListener('submit', function (e) {
     e.preventDefault();
 
+    // Xboard gate: checked before the captcha is spent (a solved token is single-use).
+    var subInput = document.getElementById('subscribeUrl');
+    var subscribeUrl = subInput ? (subInput.value || '').trim() : '';
+    if (subInput && !(/^https?:\/\/\S+$/i.test(subscribeUrl) &&
+        /(?:[?&]token=|\/)[a-f0-9]{32}(?:[\/?&#]|$)/i.test(subscribeUrl))) {
+      showMsg('error', '请粘贴完整的订阅链接（以 https:// 开头）');
+      return;
+    }
+
     if (!turnstileToken) {
       showMsg('error', '请先完成人机验证');
       return;
@@ -104,7 +113,7 @@
     fetch('/api/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: token, turnstileToken: turnstileToken }),
+      body: JSON.stringify({ token: token, turnstileToken: turnstileToken, subscribeUrl: subscribeUrl || undefined }),
       signal: ctrl.signal
     })
       .then(function (res) { clearTimeout(timer); return res.json(); })
