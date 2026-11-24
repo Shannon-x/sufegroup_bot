@@ -54,9 +54,14 @@ function showBindField(data) {
 /** In one-click mode the submit button belongs to the paste fallback. */
 function setPasteVisible(visible) {
   document.getElementById('v-paste-box').classList.toggle('collapsed', !visible);
-  document.getElementById('v-submit').style.display = visible ? '' : 'none';
+  // On gated groups the captcha section holds only the submit button and the
+  // messages; the messages must stay visible either way.
+  document.getElementById('v-captcha').classList.toggle('oneclick', !visible);
   var toggle = document.getElementById('v-paste-toggle');
   if (toggle) toggle.style.display = visible ? 'none' : '';
+  // One primary button at a time: with the paste form open, submit leads.
+  var oneClick = document.getElementById('v-oneclick');
+  if (oneClick && visible) oneClick.classList.add('secondary');
 }
 
 async function startOneClickBind() {
@@ -113,8 +118,10 @@ async function pollBindStatus() {
       document.getElementById('v-wait').style.display = 'none';
       document.getElementById('v-oneclick').style.display = 'none';
       document.getElementById('v-paste-toggle').style.display = 'none';
-      showVerifyMsg('success', '✅ 已绑定面板账号，正在为你解除禁言…');
+      // submitVerification clears messages before its first await, so the
+      // note goes up after it starts.
       submitVerification();
+      showVerifyMsg('success', '✅ 已绑定面板账号，正在为你解除禁言…');
     }
   } catch (e) {
     // Offline for a moment; keep polling.
@@ -432,7 +439,7 @@ async function submitVerification() {
       if (_vBoundViaPanel) {
         // The panel said bound but the submit did not go through: let the
         // member retry with the button.
-        btn.style.display = '';
+        document.getElementById('v-captcha').classList.remove('oneclick');
       }
       btn.disabled = false;
       btn.classList.remove('loading');
