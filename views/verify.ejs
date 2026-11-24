@@ -56,7 +56,7 @@
                         <!-- Xboard gate: bind the panel account alongside the captcha -->
                         <div class="bind-section" id="bindSection">
                             <div class="bind-title">🔒 本群仅限<%= panelName %>用户</div>
-                            <div class="bind-sub">粘贴你的订阅链接，完成验证时会一并绑定账号。免费账号也可以。</div>
+                            <div class="bind-sub">在面板首页复制订阅链接粘贴到这里即可，免费账号也可以。</div>
                             <input class="bind-input" id="subscribeUrl" name="subscribeUrl" type="url" inputmode="url"
                                    autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://…（订阅链接）">
                             <% if (panelUrl) { %>
@@ -65,6 +65,8 @@
                         </div>
                         <% } %>
 
+                        <% var _captcha = typeof captchaRequired === 'undefined' || captchaRequired; %>
+                        <% if (_captcha) { %>
                         <div class="captcha-wrapper">
                             <div class="cf-turnstile"
                                  data-sitekey="<%= siteKey %>"
@@ -74,9 +76,10 @@
                                  data-theme="auto">
                             </div>
                         </div>
+                        <% } %>
 
-                        <button type="submit" id="submitBtn" class="btn-primary" disabled>
-                            完成验证
+                        <button type="submit" id="submitBtn" class="btn-primary" <%= _captcha ? 'disabled' : '' %>>
+                            <%= _captcha ? '完成验证' : (typeof needsBind !== 'undefined' && needsBind ? '绑定并加入' : '加入群组') %>
                         </button>
                     </form>
 

@@ -478,6 +478,8 @@ export class MiniAppController {
       const needsBind = await this.xboardGate.requiresBinding(groupSettings, userId);
 
       return reply.send({
+        // Gated groups use the panel account in place of the captcha.
+        captchaRequired: !this.xboardGate.isEnabledFor(groupSettings),
         needsBind,
         panelName: needsBind ? config.xboardGate.panelName : undefined,
         panelUrl: needsBind && /^https:\/\//i.test(config.xboardGate.panelUrl) ? config.xboardGate.panelUrl : undefined,
@@ -513,10 +515,6 @@ export class MiniAppController {
       const remoteIp = request.ip;
       const { sessionId, turnstileToken, hcaptchaToken, subscribeUrl } = parsed.data;
 
-      if (!turnstileToken && !hcaptchaToken) {
-        return reply.code(400).send({ success: false, message: '请完成人机交互验证' });
-      }
-
       this.logger.info('Mini App verification request', { userId, sessionId, ip: remoteIp });
 
       const session = await this.verificationService.getSession(sessionId);
@@ -535,74 +533,10 @@ export class MiniAppController {
         return reply.code(400).send({ success: false, message: '验证已过期，请返回群组重新获取' });
       }
 
-      // Check attempts
-      if (session.attemptCount >= 5) {
-        await this.auditService.log({
-          groupId: session.groupId,
-          userId: session.userId,
-          action: 'user_failed_verification',
-          details: 'Too many attempts (Mini App)',
-          ip: remoteIp,
-        });
-        return reply.code(429).send({ success: false, message: '尝试次数过多，请稍后再试' });
-      }
-
-      // Verify provider. Attempts are charged *after* the provider answers, and
-      // only for a genuine rejection: counting one up front meant every
-      // infrastructure failure — whose own message asks the user to retry —
-      // walked the user into the too-many-attempts branch above.
-      let assessment: CaptchaAssessment;
-      let providerLabel: string;
-      let providerErrors: string[] | undefined;
-
-      if (hcaptchaToken) {
-        const hcResult = await this.hcaptchaService.verify(hcaptchaToken, remoteIp);
-        providerErrors = hcResult['error-codes'];
-        providerLabel = 'hCaptcha';
-        assessment = await assessCaptchaResult({
-          provider: 'hcaptcha',
-          result: hcResult,
-          token: hcaptchaToken,
-          sessionId: session.id,
-          // Our Mini App widget code always binds the session id where the
-          // provider supports it; hCaptcha has no cData equivalent.
-          requireCdata: true,
-        });
-      } else {
-        const turnstileResult = await this.turnstileService.verify(turnstileToken as string, remoteIp);
-        providerErrors = turnstileResult['error-codes'];
-        providerLabel = 'CF';
-        assessment = await assessCaptchaResult({
-          provider: 'turnstile',
-          result: turnstileResult,
-          token: turnstileToken as string,
-          sessionId: session.id,
-          requireCdata: true,
-        });
-      }
-
-      if (!assessment.ok) {
-        if (assessment.kind === 'infrastructure') {
-          // Undecidable, not failed: no attempt is charged and no verdict is
-          // implied about the user.
-          this.logger.error('Mini App captcha could not be assessed', {
-            userId, sessionId, reason: assessment.reason,
-          });
-          return reply.code(503).send({ success: false, message: '验证服务暂时不可用，请稍后重试' });
-        }
-
-        await this.verificationService.incrementAttempts(session.id);
-        this.logger.warn('Mini App captcha verification failed', {
-          userId, sessionId,
-          provider: providerLabel,
-          reason: assessment.reason,
-          errors: providerErrors,
-        });
-        return reply.code(400).send({ success: false, message: `${providerLabel} 人机验证失败，请重试` });
-      }
-
-      // Xboard gate, only once a human is proven: bind the subscription link
-      // if this member still needs one. Never charges an attempt.
+      // Groups behind the Xboard gate replace the captcha with the panel
+      // account itself: a working subscription link is proof of a real
+      // panel user, which no captcha farm can supply. Elsewhere the captcha
+      // stands as before.
       let gateSettings;
       try {
         gateSettings = await this.groupService.getSettings(session.groupId);
@@ -611,10 +545,86 @@ export class MiniAppController {
         this.logger.error('Could not read group settings for the Xboard gate', error);
         return reply.code(503).send({ success: false, message: '验证服务暂时不可用，请稍后重试' });
       }
-      const gate = await this.xboardGate.resolveAtVerification(gateSettings, userId, subscribeUrl);
-      if (!gate.ok) {
-        this.logger.info('Mini App verification held by the Xboard gate', { userId, sessionId, message: gate.message });
-        return reply.code(gate.httpStatus).send({ success: false, message: gate.message, needsBind: gate.needsBind });
+
+      if (this.xboardGate.isEnabledFor(gateSettings)) {
+        // Never charges an attempt: a mistyped link says nothing about the
+        // person, and the per-IP limiter already bounds retries.
+        const gate = await this.xboardGate.resolveAtVerification(gateSettings, userId, subscribeUrl);
+        if (!gate.ok) {
+          this.logger.info('Mini App verification held by the Xboard gate', { userId, sessionId, message: gate.message });
+          return reply.code(gate.httpStatus).send({ success: false, message: gate.message, needsBind: gate.needsBind });
+        }
+      } else {
+        if (!turnstileToken && !hcaptchaToken) {
+          return reply.code(400).send({ success: false, message: '请完成人机交互验证' });
+        }
+
+        // Check attempts
+        if (session.attemptCount >= 5) {
+          await this.auditService.log({
+            groupId: session.groupId,
+            userId: session.userId,
+            action: 'user_failed_verification',
+            details: 'Too many attempts (Mini App)',
+            ip: remoteIp,
+          });
+          return reply.code(429).send({ success: false, message: '尝试次数过多，请稍后再试' });
+        }
+
+        // Verify provider. Attempts are charged *after* the provider answers, and
+        // only for a genuine rejection: counting one up front meant every
+        // infrastructure failure — whose own message asks the user to retry —
+        // walked the user into the too-many-attempts branch above.
+        let assessment: CaptchaAssessment;
+        let providerLabel: string;
+        let providerErrors: string[] | undefined;
+
+        if (hcaptchaToken) {
+          const hcResult = await this.hcaptchaService.verify(hcaptchaToken, remoteIp);
+          providerErrors = hcResult['error-codes'];
+          providerLabel = 'hCaptcha';
+          assessment = await assessCaptchaResult({
+            provider: 'hcaptcha',
+            result: hcResult,
+            token: hcaptchaToken,
+            sessionId: session.id,
+            // Our Mini App widget code always binds the session id where the
+            // provider supports it; hCaptcha has no cData equivalent.
+            requireCdata: true,
+          });
+        } else {
+          const turnstileResult = await this.turnstileService.verify(turnstileToken as string, remoteIp);
+          providerErrors = turnstileResult['error-codes'];
+          providerLabel = 'CF';
+          assessment = await assessCaptchaResult({
+            provider: 'turnstile',
+            result: turnstileResult,
+            token: turnstileToken as string,
+            sessionId: session.id,
+            requireCdata: true,
+          });
+        }
+
+        if (!assessment.ok) {
+          if (assessment.kind === 'infrastructure') {
+            // Undecidable, not failed: no attempt is charged and no verdict is
+            // implied about the user.
+            this.logger.error('Mini App captcha could not be assessed', {
+              userId, sessionId, reason: assessment.reason,
+            });
+            return reply.code(503).send({ success: false, message: '验证服务暂时不可用，请稍后重试' });
+          }
+
+          await this.verificationService.incrementAttempts(session.id);
+          this.logger.warn('Mini App captcha verification failed', {
+            userId, sessionId,
+            provider: providerLabel,
+            reason: assessment.reason,
+            errors: providerErrors,
+          });
+          return reply.code(400).send({ success: false, message: `${providerLabel} 人机验证失败，请重试` });
+        }
+
       }
 
       // Single-flight the commit. Concurrent submits for one session would

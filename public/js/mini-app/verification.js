@@ -14,6 +14,7 @@ var _vTotalSeconds = 0;
 var _vRemaining = 0;
 var _vMode = 'group';
 var _vNeedsBind = false;
+var _vCaptchaRequired = true;
 
 /** Xboard gate: show the subscription-link field when the server asks for it. */
 function showBindField(data) {
@@ -31,7 +32,14 @@ function showBindField(data) {
       if (tg.openLink) { e.preventDefault(); tg.openLink(data.panelUrl); }
     });
   }
-  document.getElementById('v-sub').textContent = '请填写订阅链接并完成人机验证以加入群组';
+  document.getElementById('v-sub').textContent = _vCaptchaRequired
+    ? '请填写订阅链接并完成人机验证以加入群组'
+    : '粘贴你的订阅链接，绑定面板账号后即可开始聊天';
+}
+
+function submitLabel() {
+  if (_vCaptchaRequired) return '完成验证';
+  return _vNeedsBind ? '绑定并加入' : '加入群组';
 }
 
 /** A subscription link carries a 32-hex token, in ?token= or as the last path segment. */
@@ -88,6 +96,8 @@ async function initVerification(sessionId, mode) {
       ? '请完成人机验证，验证通过后客服系统才会接收您的消息'
       : '请完成人机验证以加入群组';
     document.getElementById('v-group-name').textContent = data.groupName;
+    // Groups behind the panel gate use the panel account in place of the captcha.
+    _vCaptchaRequired = !(_vMode === 'group' && data.captchaRequired === false);
     if (_vMode === 'group') showBindField(data);
     var fullName = data.userFirstName + (data.userLastName ? ' ' + data.userLastName : '');
     // NFKC-normalise (folds 𝒦/fancy Unicode → K) then take the first code point
@@ -114,8 +124,18 @@ async function initVerification(sessionId, mode) {
     document.getElementById('v-user-section').style.display = 'flex';
     document.getElementById('v-timer-section').style.display = 'block';
 
+    if (!_vCaptchaRequired) {
+      document.getElementById('v-turnstile-container').style.display = 'none';
+      var hcBox = document.getElementById('v-hcaptcha-container');
+      if (hcBox) hcBox.style.display = 'none';
+      var btn = document.getElementById('v-submit');
+      btn.disabled = false;
+      btn.textContent = submitLabel();
+      if (!_vNeedsBind) document.getElementById('v-sub').textContent = '已识别你的面板账号，点下方按钮即可开始聊天';
+    }
+
     // Verify Dual Nav
-    if (HCAPTCHA_SITE_KEY) {
+    if (_vCaptchaRequired && HCAPTCHA_SITE_KEY) {
       var dnav = document.getElementById('v-dual-nav');
       if (dnav) dnav.style.display = 'block';
     }
@@ -136,7 +156,9 @@ async function initVerification(sessionId, mode) {
     }, 1000);
 
     // Render Turnstile
-    if (window.turnstile) {
+    if (!_vCaptchaRequired) {
+      // Nothing to render: the panel account is the check.
+    } else if (window.turnstile) {
       renderTurnstile();
     } else {
       // Wait for Turnstile script to load (cap at ~10s to avoid an endless poll
@@ -283,7 +305,7 @@ async function submitVerification() {
       return;
     }
   }
-  if (!_vTurnstileToken && !_vHcaptchaToken) {
+  if (_vCaptchaRequired && !_vTurnstileToken && !_vHcaptchaToken) {
     showVerifyMsg('error', '请先完成人机验证');
     return;
   }
@@ -324,11 +346,13 @@ async function submitVerification() {
       showVerifyMsg('error', data.message || '验证失败，请重试');
       btn.disabled = false;
       btn.classList.remove('loading');
-      btn.textContent = '完成验证';
+      btn.textContent = submitLabel();
       // Reset Tokens for retry
       _vTurnstileToken = null;
       _vHcaptchaToken = null;
-      if (_activeCaptcha === 'cf' && window.turnstile) {
+      if (!_vCaptchaRequired) {
+        // No widget to reset.
+      } else if (_activeCaptcha === 'cf' && window.turnstile) {
         renderTurnstile();
       } else if (_activeCaptcha === 'hc' && window.hcaptcha && _hcWidgetId !== null) {
         window.hcaptcha.reset(_hcWidgetId);
@@ -338,7 +362,7 @@ async function submitVerification() {
     showVerifyMsg('error', '网络错误，请重试');
     btn.disabled = false;
     btn.classList.remove('loading');
-    btn.textContent = '完成验证';
+    btn.textContent = submitLabel();
   }
 }
 

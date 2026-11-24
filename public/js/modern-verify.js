@@ -48,6 +48,8 @@
   // ── Turnstile ──
   var turnstileToken = null;
   var submitBtn = document.getElementById('submitBtn');
+  // Groups behind the panel gate render no captcha: the panel account is the check.
+  var captchaRequired = !!document.querySelector('.cf-turnstile');
 
   window.onTurnstileSuccess = function (token) {
     turnstileToken = token;
@@ -70,6 +72,10 @@
    */
   function resetChallenge() {
     turnstileToken = null;
+    if (!captchaRequired) {
+      submitBtn.disabled = false;
+      return;
+    }
     submitBtn.disabled = true;
     try {
       if (window.turnstile && typeof window.turnstile.reset === 'function') {
@@ -96,7 +102,7 @@
       return;
     }
 
-    if (!turnstileToken) {
+    if (captchaRequired && !turnstileToken) {
       showMsg('error', '请先完成人机验证');
       return;
     }
@@ -113,7 +119,7 @@
     fetch('/api/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: token, turnstileToken: turnstileToken, subscribeUrl: subscribeUrl || undefined }),
+      body: JSON.stringify({ token: token, turnstileToken: turnstileToken || undefined, subscribeUrl: subscribeUrl || undefined }),
       signal: ctrl.signal
     })
       .then(function (res) { clearTimeout(timer); return res.json(); })

@@ -259,7 +259,8 @@ export class MembershipHandler {
       if (this.xboardGate.isEnabledFor(settings)) {
         const verdict = await this.applyXboardGate(ctx, user, group, addedBy);
         if (verdict === 'removed') return;
-        gateVerified = verdict === 'member';
+        // An admin adding someone by hand vouches for them like a binding does.
+        gateVerified = verdict === 'member' || verdict === 'skip';
         gateNeedsVerification = verdict === 'verify';
       }
 
@@ -558,7 +559,7 @@ export class MembershipHandler {
    *
    *   member  — a bound, non-banned panel user (or one we just approved): in,
    *             no captcha.
-   *   skip    — an admin let them in by hand; the gate stays out of it.
+   *   skip    — an admin let them in by hand; trusted, no captcha either.
    *   verify  — not bound yet, or the panel could not be asked. The member is
    *             muted and goes through the verification page, which asks for
    *             their subscription link alongside the captcha and has the
