@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Fastify, { FastifyInstance } from 'fastify';
+import { createHmac } from 'crypto';
 
 /**
  * The verification endpoints on groups behind the Xboard gate: the panel
@@ -10,6 +11,8 @@ import Fastify, { FastifyInstance } from 'fastify';
 vi.hoisted(() => {
   process.env.XBOARD_GATE_API_URL = 'https://panel.example.test';
   process.env.XBOARD_GATE_SECRET = 'gate-secret';
+  process.env.XBOARD_PANEL_URL = 'https://panel.example.test';
+  process.env.BOT_USERNAME = 'sufe_bot';
 });
 
 const repoStub = {
@@ -58,7 +61,11 @@ async function build(gateOn: boolean, panel: { check: string; bind?: string }) {
 
   const ctrl = new MiniAppController(botStub) as any;
   ctrl.validateInitData = () => USER_ID;
-  ctrl.rateLimiter = { apiVerifyLimit: async () => true, verifyPageLimit: async () => true };
+  ctrl.rateLimiter = {
+    apiVerifyLimit: async () => true,
+    verifyPageLimit: async () => true,
+    gateStatusLimit: async () => true,
+  };
   ctrl.verificationService = {
     getSession: vi.fn().mockResolvedValue(session()),
     verifySession: vi.fn().mockResolvedValue(true),
@@ -110,7 +117,39 @@ describe('verification on a gated group', () => {
       url: '/api/miniapp/verify/session',
       payload: { initData: 'x', sessionId: 'sess-1' },
     });
-    expect(res.json()).toMatchObject({ captchaRequired: false, needsBind: true });
+    expect(res.json()).toMatchObject({ captchaRequired: false, needsBind: true, bindLinkAvailable: true });
+  });
+});
+
+describe('one-click binding on a gated group', () => {
+  const post = (app: FastifyInstance, url: string) =>
+    app.inject({ method: 'POST', url, payload: { initData: 'x', sessionId: 'sess-1' } });
+
+  it('hands out a signed link to the panel binding page', async () => {
+    const { app } = await build(true, { check: 'unbound' });
+    const res = await post(app, '/api/miniapp/verify/bind-link');
+    expect(res.statusCode).toBe(200);
+    const url: string = res.json().url;
+    expect(url).toMatch(/^https:\/\/panel\.example\.test\/tg-bind\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+
+    const [payloadB64, sig] = url.split('/tg-bind/')[1].split('.');
+    const expected = createHmac('sha256', 'gate-secret').update('xbgate-bind:' + payloadB64).digest('base64url');
+    expect(sig).toBe(expected);
+    const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
+    expect(payload).toMatchObject({ v: 1, tg: 4242, n: 'A', b: 'sufe_bot' });
+    expect(payload.exp - Math.floor(Date.now() / 1000)).toBeGreaterThan(14 * 60);
+  });
+
+  it('reports the binding once the panel has it', async () => {
+    const { app } = await build(true, { check: 'member' });
+    const res = await post(app, '/api/miniapp/verify/gate-status');
+    expect(res.json()).toEqual({ bound: true, banned: false });
+  });
+
+  it('offers nothing on a group without the gate', async () => {
+    const { app } = await build(false, { check: 'unbound' });
+    expect((await post(app, '/api/miniapp/verify/bind-link')).statusCode).toBe(404);
+    expect((await post(app, '/api/miniapp/verify/gate-status')).statusCode).toBe(404);
   });
 });
 

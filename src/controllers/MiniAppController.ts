@@ -483,6 +483,9 @@ export class MiniAppController {
         needsBind,
         panelName: needsBind ? config.xboardGate.panelName : undefined,
         panelUrl: needsBind && /^https:\/\//i.test(config.xboardGate.panelUrl) ? config.xboardGate.panelUrl : undefined,
+        // One-click binding on the panel, offered whenever the panel has an
+        // https address; the subscription link stays as the fallback.
+        bindLinkAvailable: needsBind && this.xboardGate.bindLink({ id: userId }) !== null,
         groupName: group?.title || '群组',
         userFirstName: user?.firstName || '',
         userLastName: user?.lastName || '',
@@ -492,6 +495,55 @@ export class MiniAppController {
         siteKey: this.turnstileService.getSiteKey(),
         hcaptchaSiteKey: this.hcaptchaService.getSiteKey() || '',
       });
+    });
+
+    // ── Verification, gated groups: one-click binding on the panel ──
+    //
+    // bind-link signs a short-lived ticket naming this Telegram account and
+    // returns the panel page that binds it; the page then polls gate-status
+    // until the panel reports the binding and submits on its own.
+    const gatedSession = async (body: unknown) => {
+      const parsed = z.object({ initData: z.string().min(1), sessionId: z.string().min(1) }).safeParse(body);
+      if (!parsed.success) return { ok: false, code: 400, error: 'Invalid request' } as const;
+      const userId = this.validateInitData(parsed.data.initData);
+      if (!userId) return { ok: false, code: 401, error: 'Unauthorized' } as const;
+      const session = await this.verificationService.getSession(parsed.data.sessionId);
+      if (!session || session.userId !== userId || session.status !== 'pending' || new Date() > session.expiresAt) {
+        return { ok: false, code: 404, error: 'session_not_found' } as const;
+      }
+      const settings = await this.groupService.getSettings(session.groupId).catch(() => null);
+      if (!this.xboardGate.isEnabledFor(settings)) return { ok: false, code: 404, error: 'gate_off' } as const;
+      return { ok: true, userId } as const;
+    };
+
+    fastify.post('/api/miniapp/verify/bind-link', {
+      preHandler: async (request, reply) => {
+        if (!(await this.rateLimiter.verifyPageLimit(request, reply))) return reply;
+      },
+    }, async (request, reply) => {
+      const ctx = await gatedSession(request.body);
+      if (!ctx.ok) return reply.code(ctx.code).send({ error: ctx.error });
+
+      const user = await this.userService.findById(ctx.userId).catch(() => null);
+      const url = this.xboardGate.bindLink({
+        id: ctx.userId,
+        firstName: user?.firstName,
+        lastName: user?.lastName,
+        username: user?.username,
+      });
+      if (!url) return reply.code(404).send({ error: 'unavailable' });
+      return reply.send({ url });
+    });
+
+    fastify.post('/api/miniapp/verify/gate-status', {
+      preHandler: async (request, reply) => {
+        if (!(await this.rateLimiter.gateStatusLimit(request, reply))) return reply;
+      },
+    }, async (request, reply) => {
+      const ctx = await gatedSession(request.body);
+      if (!ctx.ok) return reply.code(ctx.code).send({ error: ctx.error });
+      const status = await this.xboardGate.check(ctx.userId, { fresh: true });
+      return reply.send({ bound: status === 'member', banned: status === 'banned' });
     });
 
     // ── Verification: submit ──

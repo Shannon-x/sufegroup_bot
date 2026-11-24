@@ -353,6 +353,8 @@ export class TelegramBot {
     // one command nobody could rate limit — it is now behind it like the rest.
     this.bot.command('start', async (ctx) => {
       try {
+        // Back from the panel's one-click binding page.
+        if (ctx.match === 'xbgate' && (await this.xboardGateHandler.handleStartReturn(ctx))) return;
         await this.privateChatHandler.handleStartCommand(ctx);
       } catch (error) {
         this.logger.error('Error handling start command', error);

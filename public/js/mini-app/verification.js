@@ -15,15 +15,22 @@ var _vRemaining = 0;
 var _vMode = 'group';
 var _vNeedsBind = false;
 var _vCaptchaRequired = true;
+var _vBoundViaPanel = false;
+var _vPollTimer = null;
+var _vOneClick = false;
 
-/** Xboard gate: show the subscription-link field when the server asks for it. */
+/** Xboard gate: show the binding options when the server asks for them. */
 function showBindField(data) {
   var box = document.getElementById('v-bind');
   if (!box) return;
   _vNeedsBind = !!data.needsBind;
   box.style.display = _vNeedsBind ? 'block' : 'none';
   if (!_vNeedsBind) return;
-  if (data.panelName) document.getElementById('v-panel-name').textContent = data.panelName;
+  if (data.panelName) {
+    document.getElementById('v-panel-name').textContent = data.panelName;
+    var names = document.querySelectorAll('.v-panel-name-2');
+    for (var i = 0; i < names.length; i++) names[i].textContent = data.panelName;
+  }
   var link = document.getElementById('v-panel-link');
   if (data.panelUrl) {
     link.href = data.panelUrl;
@@ -32,9 +39,86 @@ function showBindField(data) {
       if (tg.openLink) { e.preventDefault(); tg.openLink(data.panelUrl); }
     });
   }
+  // One-click binding on the panel is the main path; pasting the
+  // subscription link stays one tap away for anyone who cannot sign in.
+  _vOneClick = !_vCaptchaRequired && !!data.bindLinkAvailable;
+  document.getElementById('v-oneclick-box').style.display = _vOneClick ? 'block' : 'none';
+  setPasteVisible(!_vOneClick);
   document.getElementById('v-sub').textContent = _vCaptchaRequired
     ? '请填写订阅链接并完成人机验证以加入群组'
-    : '粘贴你的订阅链接，绑定面板账号后即可开始聊天';
+    : _vOneClick
+      ? '绑定面板账号后即可开始聊天，只需一次'
+      : '粘贴你的订阅链接，绑定面板账号后即可开始聊天';
+}
+
+/** In one-click mode the submit button belongs to the paste fallback. */
+function setPasteVisible(visible) {
+  document.getElementById('v-paste-box').classList.toggle('collapsed', !visible);
+  document.getElementById('v-submit').style.display = visible ? '' : 'none';
+  var toggle = document.getElementById('v-paste-toggle');
+  if (toggle) toggle.style.display = visible ? 'none' : '';
+}
+
+async function startOneClickBind() {
+  var btn = document.getElementById('v-oneclick');
+  hideVerifyMsg();
+  btn.disabled = true;
+  try {
+    var res = await fetch('/api/miniapp/verify/bind-link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: initData, sessionId: _vSessionId })
+    });
+    var data = await res.json();
+    if (!res.ok || !data.url) throw new Error(data.error || 'unavailable');
+    if (tg.openLink) tg.openLink(data.url); else window.open(data.url, '_blank', 'noopener');
+    btn.classList.add('secondary');
+    btn.textContent = '重新打开' + document.getElementById('v-panel-name').textContent;
+    document.getElementById('v-wait').style.display = 'flex';
+    startBindPolling();
+  } catch (e) {
+    showVerifyMsg('error', '暂时无法打开一键绑定，请稍后重试，或改为粘贴订阅链接');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function startBindPolling() {
+  if (_vPollTimer) return;
+  _vPollTimer = setInterval(pollBindStatus, 3000);
+}
+
+function stopBindPolling() {
+  if (_vPollTimer) clearInterval(_vPollTimer);
+  _vPollTimer = null;
+}
+
+async function pollBindStatus() {
+  if (_vBoundViaPanel) return;
+  try {
+    var res = await fetch('/api/miniapp/verify/gate-status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: initData, sessionId: _vSessionId })
+    });
+    if (!res.ok) return; // 429 or a blip: the next tick tries again.
+    var data = await res.json();
+    if (data.banned) {
+      stopBindPolling();
+      document.getElementById('v-wait').style.display = 'none';
+      showVerifyMsg('error', '这个面板账号已被停用，无法入群');
+    } else if (data.bound) {
+      stopBindPolling();
+      _vBoundViaPanel = true;
+      document.getElementById('v-wait').style.display = 'none';
+      document.getElementById('v-oneclick').style.display = 'none';
+      document.getElementById('v-paste-toggle').style.display = 'none';
+      showVerifyMsg('success', '✅ 已绑定面板账号，正在为你解除禁言…');
+      submitVerification();
+    }
+  } catch (e) {
+    // Offline for a moment; keep polling.
+  }
 }
 
 function submitLabel() {
@@ -297,7 +381,7 @@ function updateVerifyTimer() {
 
 async function submitVerification() {
   var subscribeUrl = '';
-  if (_vNeedsBind) {
+  if (_vNeedsBind && !_vBoundViaPanel) {
     subscribeUrl = (document.getElementById('v-sub-url').value || '').trim();
     // Checked before the captcha is spent: a solved token is single-use.
     if (!looksLikeSubscribeUrl(subscribeUrl)) {
@@ -333,6 +417,7 @@ async function submitVerification() {
 
     if (data.success) {
       clearInterval(_vTimer);
+      stopBindPolling();
       document.getElementById('v-done-sub').textContent =
         _vMode === 'chatwoot'
           ? '验证成功。请返回客服聊天并重新发送您的消息。'
@@ -344,6 +429,11 @@ async function submitVerification() {
       }, 3000);
     } else {
       showVerifyMsg('error', data.message || '验证失败，请重试');
+      if (_vBoundViaPanel) {
+        // The panel said bound but the submit did not go through: let the
+        // member retry with the button.
+        btn.style.display = '';
+      }
       btn.disabled = false;
       btn.classList.remove('loading');
       btn.textContent = submitLabel();
@@ -379,6 +469,14 @@ function hideVerifyMsg() {
 
 // Verification button event
 document.getElementById('v-submit').addEventListener('click', submitVerification);
+var _vOneClickBtn = document.getElementById('v-oneclick');
+if (_vOneClickBtn) _vOneClickBtn.addEventListener('click', startOneClickBind);
+var _vPasteToggle = document.getElementById('v-paste-toggle');
+if (_vPasteToggle) _vPasteToggle.addEventListener('click', function() { setPasteVisible(true); });
+// Back from the panel: check at once instead of waiting for the next tick.
+document.addEventListener('visibilitychange', function() {
+  if (!document.hidden && _vPollTimer) pollBindStatus();
+});
 document.getElementById('v-done-close').addEventListener('click', function() {
   if (tg.close) tg.close();
 });

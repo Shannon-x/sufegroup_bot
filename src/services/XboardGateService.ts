@@ -1,3 +1,4 @@
+import { createHmac } from 'crypto';
 import { config } from '../config/config';
 import { Logger } from '../utils/logger';
 import { redisService } from './RedisService';
@@ -154,6 +155,22 @@ export class XboardGateService {
     }
   }
 
+  /**
+   * A link to the panel's one-click binding page for this Telegram account, or
+   * null when the deployment cannot offer one (gate not configured, or no
+   * https panel address to send the member to).
+   *
+   * The panel signs the member in (or already has them signed in), shows the
+   * Telegram account from the ticket and binds it on "confirm". The ticket
+   * proves only which Telegram account wants binding; which panel account it
+   * lands on is decided by whoever is signed in on the panel.
+   */
+  bindLink(user: TicketUser, now: number = Date.now()): string | null {
+    const panelUrl = config.xboardGate.panelUrl.replace(/\/+$/, '');
+    if (!this.isConfigured() || !/^https:\/\//i.test(panelUrl)) return null;
+    return `${panelUrl}/tg-bind/${signBindTicket(user, config.xboardGate.secret, now)}`;
+  }
+
   private async remember(id: string, status: GateStatus): Promise<void> {
     try {
       await redisService.set(`xbgate:status:${id}`, status, CACHE_SECONDS[status]);
@@ -200,6 +217,41 @@ export class XboardGateService {
       clearTimeout(timer);
     }
   }
+}
+
+export interface TicketUser {
+  id: number | string;
+  firstName?: string | null;
+  lastName?: string | null;
+  username?: string | null;
+}
+
+/** Long enough to sign in on the panel, short enough that a leaked link soon dies. */
+export const BIND_TICKET_TTL_SECONDS = 15 * 60;
+
+const b64url = (buf: Buffer) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+/**
+ * Signs a one-click binding ticket in the format the panel's
+ * GateBindTicket::parse expects:
+ *   base64url(JSON payload) "." base64url(HMAC-SHA256(secret, "xbgate-bind:" + payload segment))
+ * Single use is enforced by the panel.
+ */
+export function signBindTicket(user: TicketUser, secret: string, now: number = Date.now()): string {
+  const name = [user.firstName, user.lastName].filter(Boolean).join(' ').trim().slice(0, 64);
+  const username = user.username && /^[A-Za-z0-9_]{1,32}$/.test(user.username) ? user.username : null;
+  const bot = config.bot.username && /^[A-Za-z0-9_]{1,32}$/.test(config.bot.username) ? config.bot.username : null;
+  const payload = {
+    v: 1,
+    tg: Number(user.id),
+    n: name,
+    u: username,
+    b: bot,
+    exp: Math.floor(now / 1000) + BIND_TICKET_TTL_SECONDS,
+  };
+  const payloadB64 = b64url(Buffer.from(JSON.stringify(payload), 'utf8'));
+  const sig = b64url(createHmac('sha256', secret).update('xbgate-bind:' + payloadB64).digest());
+  return `${payloadB64}.${sig}`;
 }
 
 /** Pulls the first http(s) URL out of a message. */

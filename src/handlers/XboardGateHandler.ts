@@ -1,4 +1,5 @@
 import { Api, InlineKeyboard } from 'grammy';
+import type { User } from 'grammy/types';
 import { MyContext } from '../services/TelegramBot';
 import { GroupService } from '../services/GroupService';
 import { VerificationService } from '../services/VerificationService';
@@ -102,14 +103,14 @@ export class XboardGateHandler {
     await this.addPending(from.id, { chatId: chat.id, title });
 
     if (status === 'unbound') {
-      await this.dm(ctx.api, dmChatId, this.bindGuide(from.first_name, title), this.guideKeyboard());
+      await this.dm(ctx.api, dmChatId, this.bindGuide(from.first_name, title), this.guideKeyboard(from));
     } else {
       await this.dm(
         ctx.api,
         dmChatId,
         `你申请加入「${escapeHtml(title)}」，但暂时无法连接${escapeHtml(config.xboardGate.panelName)}确认你的账号。\n` +
           '你的申请已保留，请稍后点下方按钮重新检查。',
-        this.guideKeyboard()
+        this.guideKeyboard(from)
       );
     }
   }
@@ -131,7 +132,7 @@ export class XboardGateHandler {
     const url = extractUrl(text);
     if (!url) {
       await ctx.reply('请直接发送你的订阅链接（以 https:// 开头的那一整串），我来帮你完成绑定。', {
-        reply_markup: this.guideKeyboard(),
+        reply_markup: this.guideKeyboard(ctx.from),
       });
       return true;
     }
@@ -172,13 +173,45 @@ export class XboardGateHandler {
       case 'invalid_link':
         await ctx.reply(
           `没认出这个订阅链接。请到${panel}里重新复制「订阅链接」完整发给我（不是节点链接，也不是网页地址）。`,
-          { reply_markup: this.guideKeyboard() }
+          { reply_markup: this.guideKeyboard(ctx.from) }
         );
         return true;
       default:
         await ctx.reply(`暂时无法连接${panel}，你的入群申请仍然保留。请稍后再发一次订阅链接。`);
         return true;
     }
+  }
+
+  /**
+   * `/start xbgate`: where the panel's "back to Telegram" button lands after a
+   * one-click binding. Approves held join requests straight away, so the
+   * member does not have to tap "check again". Returns false when there is
+   * nothing held, so the ordinary /start reply runs instead.
+   */
+  async handleStartReturn(ctx: MyContext): Promise<boolean> {
+    const userId = ctx.from?.id;
+    if (!userId || ctx.chat?.type !== 'private') return false;
+    const pending = await this.getPending(userId);
+    if (pending.length === 0) return false;
+
+    const panel = escapeHtml(config.xboardGate.panelName);
+    const status = await this.gate.check(userId, { fresh: true });
+    if (status === 'member') {
+      const approved = await this.approveAllPending(ctx.api, userId);
+      await ctx.reply(`✅ 已确认你的${panel}账号。\n${this.approvedSummary(approved)}`, { parse_mode: 'HTML' });
+    } else if (status === 'banned') {
+      await this.declineAllPending(ctx.api, userId);
+      await ctx.reply(`你的${panel}账号已被停用，无法入群。如有疑问请联系客服。`);
+    } else if (status === 'unbound') {
+      await ctx.reply(`还没有找到绑定记录。请在${panel}页面点「确认绑定」，或者直接把订阅链接发给我。`, {
+        reply_markup: this.guideKeyboard(ctx.from),
+      });
+    } else {
+      await ctx.reply(`暂时无法连接${panel}，你的入群申请仍然保留，请稍后点下方按钮重新检查。`, {
+        reply_markup: this.guideKeyboard(ctx.from),
+      });
+    }
+    return true;
   }
 
   async handleRecheck(ctx: MyContext): Promise<void> {
@@ -307,18 +340,27 @@ export class XboardGateHandler {
 
   private bindGuide(firstName: string, title: string): string {
     const panel = escapeHtml(config.xboardGate.panelName);
+    const oneClick = this.gate.bindLink({ id: 0 }) !== null;
     return (
       `👋 ${escapeHtml(firstName)}，你好！\n\n` +
       `「${escapeHtml(title)}」只对${panel}的注册用户开放，但你这个 Telegram 账号还没有绑定${panel}账号。\n\n` +
-      `<b>只需一步：</b>把你的<b>订阅链接</b>直接发给我（在${panel}首页复制即可），我会自动绑定并通过你的入群申请。\n\n` +
-      '🔒 收到后我会立刻删掉那条消息，订阅链接不会留在聊天记录里。\n' +
+      (oneClick
+        ? `<b>只需一步：</b>点下方「一键绑定」，在${panel}登录后点「确认绑定」，我会自动通过你的入群申请。\n\n` +
+          `也可以直接把你的<b>订阅链接</b>发给我（收到后我会立刻删掉那条消息）。\n`
+        : `<b>只需一步：</b>把你的<b>订阅链接</b>直接发给我（在${panel}首页复制即可），我会自动绑定并通过你的入群申请。\n\n` +
+          '🔒 收到后我会立刻删掉那条消息，订阅链接不会留在聊天记录里。\n') +
       `还没有账号？先去${panel}注册一个，免费账号也可以。`
     );
   }
 
-  private guideKeyboard(): InlineKeyboard {
+  private guideKeyboard(user?: User): InlineKeyboard {
     const kb = new InlineKeyboard();
-    if (/^https:\/\//i.test(config.xboardGate.panelUrl)) {
+    const link = user
+      ? this.gate.bindLink({ id: user.id, firstName: user.first_name, lastName: user.last_name, username: user.username })
+      : null;
+    if (link) {
+      kb.url(`🔗 用${config.xboardGate.panelName}账号一键绑定`, link).row();
+    } else if (/^https:\/\//i.test(config.xboardGate.panelUrl)) {
       kb.url(`🌐 打开${config.xboardGate.panelName}`, config.xboardGate.panelUrl).row();
     }
     kb.text('🔄 我已绑定，重新检查', GATE_RECHECK_CALLBACK);
