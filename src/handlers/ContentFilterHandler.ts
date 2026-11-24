@@ -313,6 +313,13 @@ export class ContentFilterHandler {
         action: 'message_filtered',
         details: `Action: ${action}, Reasons: ${reasons.join(', ')}, Violations: ${violations}`,
         metadata: { reasons, violations, action, messageDeleted: deleted, noticeDelivered },
+        userProfile: ctx.from && {
+          username: ctx.from.username,
+          firstName: ctx.from.first_name,
+          lastName: ctx.from.last_name,
+          isBot: ctx.from.is_bot,
+          languageCode: ctx.from.language_code,
+        },
       })
       .catch(e => this.logger.error('Could not write filter audit log', e));
 
